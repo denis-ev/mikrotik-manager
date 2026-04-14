@@ -11,7 +11,84 @@ A self-hosted, full-stack network management platform for MikroTik devices. Moni
 
 ## Screenshots
 
-> *Coming soon — screenshots will be added once the project reaches beta.*
+<p align="center">
+  <img src=".github/images/Login%20Page.png" alt="Login Page" width="55%" />
+</p>
+
+<br>
+
+### Dashboard
+
+<p align="center">
+  <img src=".github/images/Dashboard.png" alt="Dashboard" width="100%" />
+</p>
+
+### Device Management
+
+<table>
+  <tr>
+    <td align="center">
+      <img src=".github/images/Device%20List.png" alt="Device List" /><br>
+      <sub><b>Device List</b></sub>
+    </td>
+    <td align="center">
+      <img src=".github/images/Device%20Overview.png" alt="Device Overview" /><br>
+      <sub><b>Device Overview</b></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src=".github/images/Device%20Ports.png" alt="Switch Ports" /><br>
+      <sub><b>Switch Ports &amp; Throughput</b></sub>
+    </td>
+    <td align="center">
+      <img src=".github/images/Device%20Hardware.png" alt="Hardware Monitor" /><br>
+      <sub><b>Hardware Monitor</b></sub>
+    </td>
+  </tr>
+</table>
+
+### Wireless
+
+<p align="center">
+  <img src=".github/images/Device%20Wireless%20Radio.png" alt="Wireless Radio Management" width="100%" />
+</p>
+
+### Client Tracking
+
+<table>
+  <tr>
+    <td align="center">
+      <img src=".github/images/Clients.png" alt="Client List" /><br>
+      <sub><b>Client List</b></sub>
+    </td>
+    <td align="center">
+      <img src=".github/images/Client%20Details.png" alt="Client Details" /><br>
+      <sub><b>Client Detail View</b></sub>
+    </td>
+  </tr>
+</table>
+
+### Network Topology
+
+<p align="center">
+  <img src=".github/images/Topology.png" alt="Network Topology" width="100%" />
+</p>
+
+### Events &amp; Backups
+
+<table>
+  <tr>
+    <td align="center">
+      <img src=".github/images/Events.png" alt="Event Log" /><br>
+      <sub><b>Event Log</b></sub>
+    </td>
+    <td align="center">
+      <img src=".github/images/Backups.png" alt="Backup Management" /><br>
+      <sub><b>Backup Management</b></sub>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -265,17 +342,6 @@ mikrotik-manager/
 ├── docker-compose.yml
 └── .env.example
 ```
-
----
-
-## Roadmap
-
-- [ ] Email / webhook notifications for alerts
-- [ ] Multi-site / location grouping
-- [ ] Scheduled configuration backups
-- [ ] RouterOS script execution
-- [ ] Dark/light theme toggle
-- [ ] Mobile-optimized layout
 
 ---
 
