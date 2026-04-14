@@ -81,7 +81,7 @@ export default function WirelessClientsPage() {
                   <th className="px-4 py-3 text-left font-medium text-gray-500 dark:text-slate-400">Access Point</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-slate-700/50">
+              <tbody>
                 {clients.map((client, i) => {
                   const c = client as Client & { device_name?: string; ssid?: string };
                   const name = c.custom_name || c.hostname || c.mac_address;
@@ -90,8 +90,11 @@ export default function WirelessClientsPage() {
                     <tr
                       key={c.mac_address}
                       className={clsx(
-                        'hover:bg-gray-50 dark:hover:bg-slate-700/30 transition-colors',
-                        i % 2 === 1 && 'bg-gray-50/50 dark:bg-slate-800/20'
+                        'transition-colors',
+                        i % 2 === 0
+                          ? 'bg-white dark:bg-slate-900'
+                          : 'bg-gray-50 dark:bg-slate-800/40',
+                        'hover:bg-blue-50/50 dark:hover:bg-slate-700/40'
                       )}
                     >
                       <td className="px-4 py-3 font-medium">
