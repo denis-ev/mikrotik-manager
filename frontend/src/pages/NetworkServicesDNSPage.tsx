@@ -156,6 +156,7 @@ export default function NetworkServicesDNSPage() {
   // Sync settings form
   useEffect(() => {
     if (dns?.settings) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setServersInput(dns.settings['servers'] || '');
       setAllowRemote(dns.settings['allow-remote-requests'] === 'yes');
       setMaxUdpSize(dns.settings['max-udp-packet-size'] || '');

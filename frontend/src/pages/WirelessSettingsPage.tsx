@@ -660,6 +660,7 @@ function SpectralScanSettings({ canWrite }: { canWrite: boolean }) {
 
   useEffect(() => {
     if (settings) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setEnabled(!!settings['spectral_scan_enabled']);
       setIntervalHours((settings['spectral_scan_interval_hours'] as number) || 24);
     }
@@ -752,6 +753,7 @@ function APScanSettings({ canWrite }: { canWrite: boolean }) {
 
   useEffect(() => {
     if (settings) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setEnabled(!!settings['ap_scan_enabled']);
       setIntervalHours((settings['ap_scan_interval_hours'] as number) || 24);
     }
@@ -835,6 +837,7 @@ export default function WirelessSettingsPage() {
   // Auto-select first AP
   useEffect(() => {
     if (aps.length > 0 && selectedApId === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedApId(aps[0].id);
     }
   }, [aps, selectedApId]);

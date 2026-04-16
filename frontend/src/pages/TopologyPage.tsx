@@ -477,7 +477,7 @@ export default function TopologyPage() {
           <div>
             <p className="font-medium text-gray-700 dark:text-slate-300">No topology data yet</p>
             <p className="text-sm text-gray-400 dark:text-slate-500 mt-1">
-              Add devices and click "Discover" to map your network topology via LLDP neighbors.
+              Add devices and click &quot;Discover&quot; to map your network topology via LLDP neighbors.
             </p>
           </div>
           <button

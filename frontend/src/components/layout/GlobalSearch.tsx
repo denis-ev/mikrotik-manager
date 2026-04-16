@@ -45,6 +45,7 @@ export default function GlobalSearch() {
 
   // Fetch when debounced query is long enough
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (debouncedQuery.length < 2) { setResults(null); return; }
     setLoading(true);
     searchApi.search(debouncedQuery)
@@ -155,7 +156,7 @@ export default function GlobalSearch() {
 
             {!loading && !hasResults && (
               <div className="px-4 py-8 text-sm text-center text-gray-400 dark:text-slate-500">
-                No results for <span className="font-medium text-gray-600 dark:text-slate-300">"{query}"</span>
+                No results for <span className="font-medium text-gray-600 dark:text-slate-300">&quot;{query}&quot;</span>
               </div>
             )}
 

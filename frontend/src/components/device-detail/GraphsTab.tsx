@@ -38,6 +38,34 @@ function formatTime(iso: string, compact: boolean): string {
 const TRAFFIC_RANGES = ['1h', '3h', '6h', '12h', '24h'] as const;
 const RESOURCE_RANGES = ['6h', '12h', '24h', '7d'] as const;
 
+function RangeButtons({
+  ranges,
+  value,
+  onChange,
+}: {
+  ranges: readonly string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex gap-1">
+      {ranges.map((r) => (
+        <button
+          key={r}
+          onClick={() => onChange(r)}
+          className={`px-2 py-1 text-xs rounded font-medium transition-colors ${
+            value === r
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-600'
+          }`}
+        >
+          {r}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function GraphsTab({ deviceId }: Props) {
   const [trafficIface, setTrafficIface] = useState('');
   const [trafficRange, setTrafficRange] = useState<string>('1h');
@@ -83,32 +111,6 @@ export default function GraphsTab({ deviceId }: Props) {
       mem: memPct,
     };
   });
-
-  const RangeButtons = ({
-    ranges,
-    value,
-    onChange,
-  }: {
-    ranges: readonly string[];
-    value: string;
-    onChange: (v: string) => void;
-  }) => (
-    <div className="flex gap-1">
-      {ranges.map((r) => (
-        <button
-          key={r}
-          onClick={() => onChange(r)}
-          className={`px-2 py-1 text-xs rounded font-medium transition-colors ${
-            value === r
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-600'
-          }`}
-        >
-          {r}
-        </button>
-      ))}
-    </div>
-  );
 
   return (
     <div className="space-y-6">

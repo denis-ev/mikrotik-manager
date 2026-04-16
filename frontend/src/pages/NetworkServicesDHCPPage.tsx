@@ -346,6 +346,176 @@ function Section({ color, title, count, open, onToggle, action, children }: Sect
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
+// ─── ServerTable ─────────────────────────────────────────────────────────────
+
+interface ServerTableProps {
+  servers: NS[];
+  protocol: 'ipv4' | 'ipv6';
+  canWrite: boolean;
+  conflictDevices: { name: unknown }[];
+  onToggle: (id: string, currentDisabled: boolean) => void;
+  onEdit: (existing: NS) => void;
+  onDelete: (id: string) => void;
+}
+
+function ServerTable({ servers, protocol, canWrite, conflictDevices, onToggle, onEdit, onDelete }: ServerTableProps) {
+  if (servers.length === 0) {
+    return <div className="px-5 py-6 text-sm text-gray-400 dark:text-slate-500 text-center">No servers configured.</div>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/40">
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Name</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Interface</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Pool</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Lease Time</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Status</th>
+            {canWrite && <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {servers.map((s, i) => {
+            const disabled = s['disabled'] === 'true';
+            return (
+              <tr key={s['.id'] || i} className={clsx('border-b border-gray-100 dark:border-slate-800 transition-colors hover:bg-blue-50 dark:hover:bg-slate-700/40', i % 2 === 0 ? 'bg-white dark:bg-transparent' : 'bg-gray-50 dark:bg-slate-800/40')}>
+                <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{s['name'] || '—'}</td>
+                <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{s['interface'] || '—'}</td>
+                <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{s['address-pool'] || '—'}</td>
+                <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{leaseLabel(s['lease-time'] || '')}</td>
+                <td className="px-4 py-3"><StatusBadge disabled={disabled} /></td>
+                {canWrite && (
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <button onClick={() => {
+                        if (disabled && conflictDevices.length > 0) {
+                          const names = conflictDevices.map(d => d.name as string).join(', ');
+                          if (!confirm(`Active ${protocol.toUpperCase()} DHCP server(s) already running on: ${names}.\n\nEnabling another DHCP server on the same network may cause IP address conflicts. Continue?`)) return;
+                        }
+                        onToggle(s['.id'], disabled);
+                      }} title={disabled ? 'Enable' : 'Disable'}
+                        className={clsx('p-1.5 rounded-lg transition-colors', disabled ? 'text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20' : 'text-green-600 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20')}>
+                        <Power className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => onEdit(s)} title="Edit"
+                        className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => { if (confirm(`Delete DHCP server "${s['name']}"?`)) onDelete(s['.id']); }} title="Delete"
+                        className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── PoolTable ───────────────────────────────────────────────────────────────
+
+interface PoolTableProps {
+  pools: NS[];
+  protocol: 'ipv4' | 'ipv6';
+  canWrite: boolean;
+  onDelete: (id: string) => void;
+}
+
+function PoolTable({ pools, protocol, canWrite, onDelete }: PoolTableProps) {
+  if (pools.length === 0) return <div className="px-5 py-6 text-sm text-gray-400 dark:text-slate-500 text-center">No pools configured.</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/40">
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Name</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">{protocol === 'ipv4' ? 'Ranges' : 'Prefix'}</th>
+            {canWrite && <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {pools.map((p, i) => (
+            <tr key={p['.id'] || i} className={clsx('border-b border-gray-100 dark:border-slate-800 transition-colors hover:bg-blue-50 dark:hover:bg-slate-700/40', i % 2 === 0 ? 'bg-white dark:bg-transparent' : 'bg-gray-50 dark:bg-slate-800/40')}>
+              <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{p['name']}</td>
+              <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-slate-300">{p['ranges'] || p['prefix'] || '—'}</td>
+              {canWrite && (
+                <td className="px-4 py-3 text-right">
+                  <button onClick={() => { if (confirm(`Delete pool "${p['name']}"?`)) onDelete(p['.id']); }}
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── LeaseTable ──────────────────────────────────────────────────────────────
+
+interface LeaseTableProps {
+  leases: NS[];
+  canWrite: boolean;
+  onDelete: (id: string) => void;
+}
+
+function LeaseTable({ leases, canWrite, onDelete }: LeaseTableProps) {
+  if (leases.length === 0) return <div className="px-5 py-6 text-sm text-gray-400 dark:text-slate-500 text-center">No leases.</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/40">
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">MAC / DUID</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Address</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Hostname</th>
+            <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Type</th>
+            {canWrite && <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {leases.map((l, i) => {
+            const isStatic = l['dynamic'] !== 'true';
+            return (
+              <tr key={l['.id'] || i} className={clsx('border-b border-gray-100 dark:border-slate-800 transition-colors hover:bg-blue-50 dark:hover:bg-slate-700/40', i % 2 === 0 ? 'bg-white dark:bg-transparent' : 'bg-gray-50 dark:bg-slate-800/40')}>
+                <td className="px-4 py-3 font-mono text-xs text-gray-700 dark:text-slate-300">{l['mac-address'] || l['duid'] || '—'}</td>
+                <td className="px-4 py-3 font-mono text-xs text-gray-700 dark:text-slate-300">{l['address'] || '—'}</td>
+                <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{l['host-name'] || l['comment'] || '—'}</td>
+                <td className="px-4 py-3">
+                  <span className={clsx('text-xs px-2 py-0.5 rounded-full font-medium', isStatic ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-gray-100 dark:bg-slate-700 text-gray-500')}>
+                    {isStatic ? 'Static' : 'Dynamic'}
+                  </span>
+                </td>
+                {canWrite && (
+                  <td className="px-4 py-3 text-right">
+                    {isStatic && (
+                      <button onClick={() => onDelete(l['.id'])}
+                        className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 export default function NetworkServicesDHCPPage() {
   const canWrite = useCanWrite();
   const qc = useQueryClient();
@@ -429,148 +599,6 @@ export default function NetworkServicesDHCPPage() {
     const v6 = d.dhcp_v6 as { total: number; enabled: number } | null;
     return (v6?.enabled ?? 0) > 0;
   });
-
-  function ServerTable({ servers, protocol }: { servers: NS[]; protocol: 'ipv4' | 'ipv6' }) {
-    if (servers.length === 0) {
-      return <div className="px-5 py-6 text-sm text-gray-400 dark:text-slate-500 text-center">No servers configured.</div>;
-    }
-    return (
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/40">
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Name</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Interface</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Pool</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Lease Time</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Status</th>
-              {canWrite && <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {servers.map((s, i) => {
-              const disabled = s['disabled'] === 'true';
-              return (
-                <tr key={s['.id'] || i} className={clsx('border-b border-gray-100 dark:border-slate-800 transition-colors hover:bg-blue-50 dark:hover:bg-slate-700/40', i % 2 === 0 ? 'bg-white dark:bg-transparent' : 'bg-gray-50 dark:bg-slate-800/40')}>
-                  <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{s['name'] || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{s['interface'] || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{s['address-pool'] || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{leaseLabel(s['lease-time'] || '')}</td>
-                  <td className="px-4 py-3"><StatusBadge disabled={disabled} /></td>
-                  {canWrite && (
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => {
-                          if (disabled) {
-                            const conflicts = protocol === 'ipv4' ? conflictDevicesV4 : conflictDevicesV6;
-                            if (conflicts.length > 0) {
-                              const names = conflicts.map(d => d.name as string).join(', ');
-                              if (!confirm(`Active ${protocol.toUpperCase()} DHCP server(s) already running on: ${names}.\n\nEnabling another DHCP server on the same network may cause IP address conflicts. Continue?`)) return;
-                            }
-                          }
-                          toggleServer.mutate({ id: s['.id'], disabled: !disabled, protocol });
-                        }} title={disabled ? 'Enable' : 'Disable'}
-                          className={clsx('p-1.5 rounded-lg transition-colors', disabled ? 'text-gray-400 hover:text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20' : 'text-green-600 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20')}>
-                          <Power className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => setServerForm({ protocol, existing: s })} title="Edit"
-                          className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => { if (confirm(`Delete DHCP server "${s['name']}"?`)) deleteServer.mutate({ id: s['.id'], protocol }); }} title="Delete"
-                          className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  function PoolTable({ pools, protocol }: { pools: NS[]; protocol: 'ipv4' | 'ipv6' }) {
-    if (pools.length === 0) return <div className="px-5 py-6 text-sm text-gray-400 dark:text-slate-500 text-center">No pools configured.</div>;
-    return (
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/40">
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Name</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">{protocol === 'ipv4' ? 'Ranges' : 'Prefix'}</th>
-              {canWrite && <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {pools.map((p, i) => (
-              <tr key={p['.id'] || i} className={clsx('border-b border-gray-100 dark:border-slate-800 transition-colors hover:bg-blue-50 dark:hover:bg-slate-700/40', i % 2 === 0 ? 'bg-white dark:bg-transparent' : 'bg-gray-50 dark:bg-slate-800/40')}>
-                <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{p['name']}</td>
-                <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-slate-300">{p['ranges'] || p['prefix'] || '—'}</td>
-                {canWrite && (
-                  <td className="px-4 py-3 text-right">
-                    <button onClick={() => { if (confirm(`Delete pool "${p['name']}"?`)) deletePool.mutate({ id: p['.id'], protocol }); }}
-                      className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  function LeaseTable({ leases, protocol }: { leases: NS[]; protocol: 'ipv4' | 'ipv6' }) {
-    if (leases.length === 0) return <div className="px-5 py-6 text-sm text-gray-400 dark:text-slate-500 text-center">No leases.</div>;
-    return (
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/40">
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">MAC / DUID</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Address</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Hostname</th>
-              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Type</th>
-              {canWrite && <th className="px-4 py-2.5 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {leases.map((l, i) => {
-              const isStatic = l['dynamic'] !== 'true';
-              return (
-                <tr key={l['.id'] || i} className={clsx('border-b border-gray-100 dark:border-slate-800 transition-colors hover:bg-blue-50 dark:hover:bg-slate-700/40', i % 2 === 0 ? 'bg-white dark:bg-transparent' : 'bg-gray-50 dark:bg-slate-800/40')}>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-700 dark:text-slate-300">{l['mac-address'] || l['duid'] || '—'}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-700 dark:text-slate-300">{l['address'] || '—'}</td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-slate-300">{l['host-name'] || l['comment'] || '—'}</td>
-                  <td className="px-4 py-3">
-                    <span className={clsx('text-xs px-2 py-0.5 rounded-full font-medium', isStatic ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-gray-100 dark:bg-slate-700 text-gray-500')}>
-                      {isStatic ? 'Static' : 'Dynamic'}
-                    </span>
-                  </td>
-                  {canWrite && (
-                    <td className="px-4 py-3 text-right">
-                      {isStatic && (
-                        <button onClick={() => deleteLease.mutate({ id: l['.id'], protocol })}
-                          className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -656,42 +684,54 @@ export default function NetworkServicesDHCPPage() {
           <Section color="text-blue-500" title="IPv4 DHCP Servers" count={dhcp.ipv4.length}
             open={v4Open} onToggle={() => setV4Open(o => !o)}
             action={canWrite ? <button onClick={() => setServerForm({ protocol: 'ipv4' })} className="flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors"><Plus className="w-3 h-3" />Add</button> : undefined}>
-            <ServerTable servers={dhcp.ipv4} protocol="ipv4" />
+            <ServerTable servers={dhcp.ipv4} protocol="ipv4" canWrite={canWrite}
+              conflictDevices={conflictDevicesV4 as { name: unknown }[]}
+              onToggle={(id, cur) => toggleServer.mutate({ id, disabled: !cur, protocol: 'ipv4' })}
+              onEdit={(s) => setServerForm({ protocol: 'ipv4', existing: s })}
+              onDelete={(id) => deleteServer.mutate({ id, protocol: 'ipv4' })} />
           </Section>
 
           {/* IPv4 Pools */}
           <Section color="text-cyan-500" title="IPv4 Address Pools" count={dhcp.pools_v4.length}
             open={poolsV4Open} onToggle={() => setPoolsV4Open(o => !o)}
             action={canWrite ? <button onClick={() => setPoolForm('ipv4')} className="flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors"><Plus className="w-3 h-3" />Add</button> : undefined}>
-            <PoolTable pools={dhcp.pools_v4} protocol="ipv4" />
+            <PoolTable pools={dhcp.pools_v4} protocol="ipv4" canWrite={canWrite}
+              onDelete={(id) => deletePool.mutate({ id, protocol: 'ipv4' })} />
           </Section>
 
           {/* IPv4 Leases */}
           <Section color="text-sky-500" title="IPv4 Leases" count={leasesV4.length}
             open={leasesOpen} onToggle={() => setLeasesOpen(o => !o)}
             action={canWrite ? <button onClick={() => setLeaseForm('ipv4')} className="flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors"><Plus className="w-3 h-3" />Static</button> : undefined}>
-            <LeaseTable leases={leasesV4} protocol="ipv4" />
+            <LeaseTable leases={leasesV4} canWrite={canWrite}
+              onDelete={(id) => deleteLease.mutate({ id, protocol: 'ipv4' })} />
           </Section>
 
           {/* IPv6 Servers */}
           <Section color="text-indigo-500" title="IPv6 DHCP Servers" count={dhcp.ipv6.length}
             open={v6Open} onToggle={() => setV6Open(o => !o)}
             action={canWrite ? <button onClick={() => setServerForm({ protocol: 'ipv6' })} className="flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg transition-colors"><Plus className="w-3 h-3" />Add</button> : undefined}>
-            <ServerTable servers={dhcp.ipv6} protocol="ipv6" />
+            <ServerTable servers={dhcp.ipv6} protocol="ipv6" canWrite={canWrite}
+              conflictDevices={conflictDevicesV6 as { name: unknown }[]}
+              onToggle={(id, cur) => toggleServer.mutate({ id, disabled: !cur, protocol: 'ipv6' })}
+              onEdit={(s) => setServerForm({ protocol: 'ipv6', existing: s })}
+              onDelete={(id) => deleteServer.mutate({ id, protocol: 'ipv6' })} />
           </Section>
 
           {/* IPv6 Pools */}
           <Section color="text-violet-500" title="IPv6 Address Pools" count={dhcp.pools_v6.length}
             open={poolsV6Open} onToggle={() => setPoolsV6Open(o => !o)}
             action={canWrite ? <button onClick={() => setPoolForm('ipv6')} className="flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg transition-colors"><Plus className="w-3 h-3" />Add</button> : undefined}>
-            <PoolTable pools={dhcp.pools_v6} protocol="ipv6" />
+            <PoolTable pools={dhcp.pools_v6} protocol="ipv6" canWrite={canWrite}
+              onDelete={(id) => deletePool.mutate({ id, protocol: 'ipv6' })} />
           </Section>
 
           {/* IPv6 Leases */}
           <Section color="text-purple-500" title="IPv6 Bindings" count={leasesV6.length}
             open={leasesV6Open} onToggle={() => setLeasesV6Open(o => !o)}
             action={canWrite ? <button onClick={() => setLeaseForm('ipv6')} className="flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg transition-colors"><Plus className="w-3 h-3" />Static</button> : undefined}>
-            <LeaseTable leases={leasesV6} protocol="ipv6" />
+            <LeaseTable leases={leasesV6} canWrite={canWrite}
+              onDelete={(id) => deleteLease.mutate({ id, protocol: 'ipv6' })} />
           </Section>
         </>
       )}

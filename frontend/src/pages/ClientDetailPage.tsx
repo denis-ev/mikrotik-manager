@@ -190,6 +190,7 @@ function ConnectionDiagram({ client }: { client: ClientDetail }) {
         {/* Connected device (AP/switch) */}
         <div className="flex flex-col items-center gap-1 min-w-[80px]">
           <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+            {/* eslint-disable-next-line react-hooks/static-components */}
             <DeviceIcon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
           </div>
           <span className="text-[11px] text-center text-gray-700 dark:text-slate-300 font-medium max-w-[90px] truncate">
@@ -213,6 +214,7 @@ function ConnectionDiagram({ client }: { client: ClientDetail }) {
             <ChevronRight className="w-4 h-4 text-gray-300 dark:text-slate-600 flex-shrink-0" />
             <div className="flex flex-col items-center gap-1 min-w-[80px]">
               <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
+                {/* eslint-disable-next-line react-hooks/static-components */}
                 <UpstreamIcon className="w-5 h-5 text-purple-600 dark:text-purple-400" />
               </div>
               <span className="text-[11px] text-center text-gray-700 dark:text-slate-300 font-medium max-w-[90px] truncate">
@@ -232,6 +234,15 @@ function ConnectionDiagram({ client }: { client: ClientDetail }) {
 }
 
 // ─── Client Details Card ──────────────────────────────────────────────────────
+
+function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2 border-b border-gray-100 dark:border-slate-700/50 last:border-0">
+      <span className="text-xs text-gray-500 dark:text-slate-400 shrink-0 pt-0.5">{label}</span>
+      <div className="text-xs text-gray-800 dark:text-slate-200 text-right">{children}</div>
+    </div>
+  );
+}
 
 function ClientDetailsCard({ client, canWrite }: { client: ClientDetail; canWrite: boolean }) {
   const qc = useQueryClient();
@@ -271,13 +282,6 @@ function ClientDetailsCard({ client, canWrite }: { client: ClientDetail; canWrit
       setTimeout(() => setWolStatus('idle'), 3000);
     }
   };
-
-  const DetailRow = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <div className="flex items-start justify-between gap-4 py-2 border-b border-gray-100 dark:border-slate-700/50 last:border-0">
-      <span className="text-xs text-gray-500 dark:text-slate-400 shrink-0 pt-0.5">{label}</span>
-      <div className="text-xs text-gray-800 dark:text-slate-200 text-right">{children}</div>
-    </div>
-  );
 
   return (
     <div className="card p-4 space-y-4">

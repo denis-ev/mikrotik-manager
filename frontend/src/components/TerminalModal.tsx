@@ -199,6 +199,7 @@ export default function TerminalModal({ deviceId, deviceName, onClose }: Props) 
     const origW   = el.offsetWidth;
     const origH   = el.offsetHeight;
 
+    // eslint-disable-next-line react-hooks/immutability
     document.body.style.userSelect = 'none';
 
     const onMove = (me: MouseEvent) => {

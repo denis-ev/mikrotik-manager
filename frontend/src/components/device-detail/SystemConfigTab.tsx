@@ -543,7 +543,7 @@ export default function SystemConfigTab({ deviceId }: Props) {
 
         {!updateInfo && !updateChecking && !installSuccess && (
           <p className="text-sm text-gray-400 dark:text-slate-500">
-            Click "Check for Updates" to query the MikroTik update server.
+            Click &quot;Check for Updates&quot; to query the MikroTik update server.
           </p>
         )}
       </div>

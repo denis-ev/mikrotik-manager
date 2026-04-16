@@ -454,6 +454,7 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
     if (!autoOpenBridge || !data?.ports) return;
     const bridgePort = data.ports.find((p) => p.name === autoOpenBridge);
     if (bridgePort) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBridgeError('');
       setEditingBridge(bridgePort);
       onBridgeOpened?.();

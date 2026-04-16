@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useAuthStore } from '../store/authStore';
 
@@ -13,7 +13,7 @@ export function useSocket(
 ): void {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const eventsRef = useRef(events);
-  eventsRef.current = events;
+  useLayoutEffect(() => { eventsRef.current = events; });
 
   useEffect(() => {
     if (!isAuthenticated) return;

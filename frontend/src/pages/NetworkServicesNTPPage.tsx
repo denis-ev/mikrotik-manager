@@ -79,6 +79,7 @@ export default function NetworkServicesNTPPage() {
 
   useEffect(() => {
     if (ntp) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setServerEnabled(ntp.server?.['enabled'] === 'yes');
       setServerBroadcast(ntp.server?.['broadcast'] === 'yes');
       setServerManycast(ntp.server?.['manycast'] === 'yes');

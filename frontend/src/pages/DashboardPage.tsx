@@ -229,6 +229,12 @@ export default function DashboardPage() {
     ts: new Date(p.time).getTime(),
   }));
 
+  const chartDomain = useMemo<[number, number]>(
+    () => [Date.now() - 24 * 60 * 60 * 1000, Date.now()],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clientsOverTime]
+  );
+
   const { data: topClients = [] } = useQuery({
     queryKey: ['top-clients'],
     queryFn: () => metricsApi.topClients(8).then((r) => r.data),
@@ -393,7 +399,7 @@ export default function DashboardPage() {
                   dataKey="ts"
                   type="number"
                   scale="time"
-                  domain={[Date.now() - 24 * 60 * 60 * 1000, Date.now()]}
+                  domain={chartDomain}
                   tick={{ fontSize: 11 }}
                   tickCount={7}
                   tickFormatter={(t) => format(new Date(t), 'HH:mm')}

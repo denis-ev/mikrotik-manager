@@ -12,7 +12,9 @@ const storedTheme = (() => {
       const parsed = JSON.parse(raw);
       return parsed?.state?.theme;
     }
-  } catch {}
+  } catch {
+    // localStorage unavailable (e.g. sandboxed iframe) — leave as default
+  }
   return 'light';
 })();
 if (storedTheme === 'dark') {
