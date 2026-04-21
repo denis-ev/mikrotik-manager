@@ -350,7 +350,9 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
           duplicate={duplicateSerial}
           pendingName={form.name}
           pendingIp={form.ip_address}
-          onCancel={() => setDuplicateSerial(null)}
+          onCancel={() => {
+            setDuplicateSerial(null);
+          }}
           onCombine={handleCombineDuplicate}
           onReplace={handleReplaceDuplicate}
           loading={loading}

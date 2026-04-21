@@ -44,7 +44,6 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
   });
   const [error, setError] = useState('');
   const cancelRef = useRef(false);
-  const [autoCombineDuplicates, setAutoCombineDuplicates] = useState(false);
 
   const { data: presets = [] } = useQuery({
     queryKey: ['credential-presets'],
@@ -108,30 +107,8 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
       } catch (err: unknown) {
         const data = (err as { response?: { data?: unknown } })?.response?.data;
 
-        if (isDuplicateSerialError(data) && data.existing_device?.id && autoCombineDuplicates) {
-          try {
-            await devicesApi.create({ ...payload, combine_with_device_id: data.existing_device.id });
-            out.push({
-              ip: d.address,
-              identity: name,
-              ok: true,
-              message: `Combined with ${data.existing_device.name} (${data.existing_device.ip_address})`,
-            });
-            setResults([...out]);
-            continue;
-          } catch (combineErr: unknown) {
-            const combineMsg =
-              (combineErr as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.message ||
-              (combineErr as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.error ||
-              'Combine failed';
-            out.push({ ip: d.address, identity: name, ok: false, message: combineMsg });
-            setResults([...out]);
-            continue;
-          }
-        }
-
         const msg = isDuplicateSerialError(data)
-          ? `Duplicate serial ${data.candidate.serial_number} already exists on ${data.existing_device.name}`
+          ? `Duplicate serial mismatch: candidate ${data.candidate.serial_number}, existing ${data.existing_device.serial_number}. Review manually before combining.`
           : ((data as { message?: string; error?: string } | undefined)?.message ||
              (typeof (data as { error?: unknown } | undefined)?.error === 'string'
                ? String((data as { error?: string }).error)
@@ -222,17 +199,6 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
               </div>
             </div>
           )}
-
-          <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-slate-400 select-none">
-            <input
-              type="checkbox"
-              className="rounded border-gray-300 dark:border-slate-600"
-              checked={autoCombineDuplicates}
-              disabled={running}
-              onChange={(e) => setAutoCombineDuplicates(e.target.checked)}
-            />
-            Auto-combine duplicate serials into existing devices
-          </label>
 
           {error && (
             <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
