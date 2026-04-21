@@ -26,6 +26,11 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
   });
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<ResultItem[] | null>(null);
+  const [progress, setProgress] = useState<{ current: number; total: number; currentName: string }>({
+    current: 0,
+    total: 0,
+    currentName: '',
+  });
   const [error, setError] = useState('');
 
   const { data: presets = [] } = useQuery({
@@ -56,17 +61,21 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
     }
 
     setRunning(true);
+    setProgress({ current: 0, total: targets.length, currentName: '' });
     const out: ResultItem[] = [];
-    for (const d of targets) {
+    for (let i = 0; i < targets.length; i++) {
+      const d = targets[i];
+      const name = d.identity || d.address;
+      setProgress({ current: i + 1, total: targets.length, currentName: name });
       const payload =
         mode === 'preset'
           ? {
-              name: d.identity || d.address,
+              name,
               ip_address: d.address,
               credential_preset_id: presetId!,
             }
           : {
-              name: d.identity || d.address,
+              name,
               ip_address: d.address,
               api_username: manual.api_username,
               api_password: manual.api_password,
@@ -78,14 +87,17 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
             };
       try {
         await devicesApi.create(payload);
-        out.push({ ip: d.address, identity: d.identity || d.address, ok: true, message: 'Added' });
+        out.push({ ip: d.address, identity: name, ok: true, message: 'Added' });
+        setResults([...out]);
       } catch (err: unknown) {
         const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed';
-        out.push({ ip: d.address, identity: d.identity || d.address, ok: false, message: msg });
+        out.push({ ip: d.address, identity: name, ok: false, message: msg });
+        setResults([...out]);
       }
     }
     setResults(out);
     setRunning(false);
+    setProgress((p) => ({ ...p, currentName: '' }));
   };
 
   const okCount = results?.filter((r) => r.ok).length ?? 0;
@@ -171,10 +183,30 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
             </div>
           )}
 
+          {running && (
+            <div className="space-y-2">
+              <div className="text-sm text-gray-700 dark:text-slate-300">
+                Trying {progress.current}/{progress.total}
+                {progress.currentName && (
+                  <>
+                    : <span className="font-medium">{progress.currentName}</span>
+                  </>
+                )}
+              </div>
+              <div className="w-full h-2 bg-gray-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 transition-all"
+                  style={{ width: `${progress.total ? Math.round((progress.current / progress.total) * 100) : 0}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {results && (
             <div className="space-y-2">
               <div className="text-sm text-gray-700 dark:text-slate-300">
-                Done: <span className="text-green-600 dark:text-green-400">{okCount} succeeded</span>,{' '}
+                {running ? 'Live results:' : 'Done:'}{' '}
+                <span className="text-green-600 dark:text-green-400">{okCount} succeeded</span>,{' '}
                 <span className="text-red-600 dark:text-red-400">{failCount} failed</span>
               </div>
               <div className="max-h-56 overflow-y-auto border border-gray-200 dark:border-slate-700 rounded-lg">
