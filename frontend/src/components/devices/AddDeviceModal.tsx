@@ -36,6 +36,32 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  const createPayload = (combine = false) => {
+    if (selectedPreset) {
+      return {
+        name: form.name,
+        ip_address: form.ip_address,
+        device_type: form.device_type as import('../../types').DeviceType,
+        notes: form.notes,
+        credential_preset_id: selectedPreset.id,
+        combine_duplicate_serial: combine,
+      };
+    }
+    return {
+      name: form.name,
+      ip_address: form.ip_address,
+      api_port: parseInt(form.api_port, 10),
+      api_username: form.api_username,
+      api_password: form.api_password,
+      ssh_port: parseInt(form.ssh_port, 10),
+      ssh_username: form.ssh_username || undefined,
+      ssh_password: form.ssh_password || undefined,
+      device_type: form.device_type as import('../../types').DeviceType,
+      notes: form.notes,
+      combine_duplicate_serial: combine,
+    };
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!form.name || !form.ip_address) {
@@ -50,32 +76,33 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
     setLoading(true);
     setError('');
     try {
-      if (selectedPreset) {
-        // Preset path — server pulls creds from the preset.
-        await devicesApi.create({
-          name: form.name,
-          ip_address: form.ip_address,
-          device_type: form.device_type as import('../../types').DeviceType,
-          notes: form.notes,
-          credential_preset_id: selectedPreset.id,
-        });
-      } else {
-        await devicesApi.create({
-          name: form.name,
-          ip_address: form.ip_address,
-          api_port: parseInt(form.api_port),
-          api_username: form.api_username,
-          api_password: form.api_password,
-          ssh_port: parseInt(form.ssh_port),
-          ssh_username: form.ssh_username || undefined,
-          ssh_password: form.ssh_password || undefined,
-          device_type: form.device_type as import('../../types').DeviceType,
-          notes: form.notes,
-        });
-      }
+      await devicesApi.create(createPayload(false));
       onSuccess();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      const data = (err as {
+        response?: { status?: number; data?: { error?: string; code?: string; duplicate_device?: { id: number; name: string; serial_number?: string; ip_address?: string } } };
+      })?.response?.data;
+      if ((err as { response?: { status?: number } })?.response?.status === 409 && data?.code === 'duplicate_serial' && data.duplicate_device) {
+        const d = data.duplicate_device;
+        const shouldCombine = confirm(
+          `This device appears to already exist (same serial ${d.serial_number || 'unknown'}).\n\n` +
+          `Existing: ${d.name} (${d.ip_address || 'no IP'})\n` +
+          `New target: ${form.name} (${form.ip_address})\n\n` +
+          'Would you like to combine/update the existing device with this connection info instead of creating a duplicate?'
+        );
+        if (shouldCombine) {
+          try {
+            await devicesApi.create(createPayload(true));
+            onSuccess();
+            return;
+          } catch (err2: unknown) {
+            const msg2 = (err2 as { response?: { data?: { error?: string } } })?.response?.data?.error;
+            setError(msg2 || 'Failed to combine duplicate by serial');
+            return;
+          }
+        }
+      }
+      const msg = data?.error;
       setError(msg || 'Failed to add device');
     } finally {
       setLoading(false);

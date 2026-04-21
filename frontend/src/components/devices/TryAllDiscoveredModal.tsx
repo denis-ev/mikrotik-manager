@@ -1,7 +1,12 @@
 import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { X, Loader2, CheckCircle, AlertCircle, KeyRound } from 'lucide-react';
-import { credentialPresetsApi, devicesApi, type DiscoveredDevice } from '../../services/api';
+import {
+  credentialPresetsApi,
+  devicesApi,
+  type DiscoveredDevice,
+  type DuplicateSerialError,
+} from '../../services/api';
 import type { DeviceType } from '../../types';
 
 interface Props {
@@ -12,6 +17,11 @@ interface Props {
 
 type ResultItem = { ip: string; identity: string; ok: boolean; message: string };
 
+function isDuplicateSerialError(v: unknown): v is DuplicateSerialError {
+  if (!v || typeof v !== 'object') return false;
+  const obj = v as { error?: unknown; code?: unknown; existing_device?: unknown };
+  return obj.error === 'duplicate_serial' && obj.code === 'duplicate_serial' && !!obj.existing_device;
+}
 export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSuccess }: Props) {
   const [mode, setMode] = useState<'preset' | 'manual'>('preset');
   const [presetId, setPresetId] = useState<number | null>(null);
@@ -34,6 +44,7 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
   });
   const [error, setError] = useState('');
   const cancelRef = useRef(false);
+  const [autoCombineDuplicates, setAutoCombineDuplicates] = useState(false);
 
   const { data: presets = [] } = useQuery({
     queryKey: ['credential-presets'],
@@ -95,7 +106,37 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
         out.push({ ip: d.address, identity: name, ok: true, message: 'Added' });
         setResults([...out]);
       } catch (err: unknown) {
-        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed';
+        const data = (err as { response?: { data?: unknown } })?.response?.data;
+
+        if (isDuplicateSerialError(data) && data.existing_device?.id && autoCombineDuplicates) {
+          try {
+            await devicesApi.create({ ...payload, combine_with_device_id: data.existing_device.id });
+            out.push({
+              ip: d.address,
+              identity: name,
+              ok: true,
+              message: `Combined with ${data.existing_device.name} (${data.existing_device.ip_address})`,
+            });
+            setResults([...out]);
+            continue;
+          } catch (combineErr: unknown) {
+            const combineMsg =
+              (combineErr as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.message ||
+              (combineErr as { response?: { data?: { message?: string; error?: string } } })?.response?.data?.error ||
+              'Combine failed';
+            out.push({ ip: d.address, identity: name, ok: false, message: combineMsg });
+            setResults([...out]);
+            continue;
+          }
+        }
+
+        const msg = isDuplicateSerialError(data)
+          ? `Duplicate serial ${data.candidate.serial_number} already exists on ${data.existing_device.name}`
+          : ((data as { message?: string; error?: string } | undefined)?.message ||
+             (typeof (data as { error?: unknown } | undefined)?.error === 'string'
+               ? String((data as { error?: string }).error)
+               : '') ||
+             'Failed');
         out.push({ ip: d.address, identity: name, ok: false, message: msg });
         setResults([...out]);
       }
@@ -181,6 +222,17 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
               </div>
             </div>
           )}
+
+          <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-slate-400 select-none">
+            <input
+              type="checkbox"
+              className="rounded border-gray-300 dark:border-slate-600"
+              checked={autoCombineDuplicates}
+              disabled={running}
+              onChange={(e) => setAutoCombineDuplicates(e.target.checked)}
+            />
+            Auto-combine duplicate serials into existing devices
+          </label>
 
           {error && (
             <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">

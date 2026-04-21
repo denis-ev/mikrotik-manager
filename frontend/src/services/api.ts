@@ -66,12 +66,40 @@ export interface DiscoveredDevice {
   duplicate_of_device_name: string | null;
 }
 
+export interface DuplicateSerialDeviceInfo {
+  id: number;
+  name: string;
+  ip_address: string;
+  serial_number: string;
+  model?: string;
+  ros_version?: string;
+}
+
+export interface DuplicateSerialError {
+  error: string;
+  code: 'duplicate_serial';
+  existing_device: DuplicateSerialDeviceInfo;
+  candidate: {
+    serial_number: string;
+    identity: string;
+    model?: string;
+    ros_version?: string;
+    ip_address: string;
+  };
+}
+
 export const devicesApi = {
   list: () => api.get<Device[]>('/devices'),
   discovered: () => api.get<DiscoveredDevice[]>('/devices/discovered'),
   get: (id: number) => api.get<Device>(`/devices/${id}`),
   create: (
-    data: (Partial<Device> & { api_password?: string; ssh_password?: string; credential_preset_id?: number })
+    data: (Partial<Device> & {
+      api_password?: string;
+      ssh_password?: string;
+      credential_preset_id?: number;
+      force_replace_existing_by_serial?: boolean;
+      combine_with_device_id?: number;
+    })
   ) => api.post<Device>('/devices', data),
   update: (
     id: number,
