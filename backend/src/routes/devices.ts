@@ -192,7 +192,9 @@ router.post('/', requireWrite, async (req: Request, res: Response) => {
   const ssh_username: string | null = preset ? preset.ssh_username : (req.body.ssh_username ?? null);
   const ssh_password: string | null = preset ? preset.ssh_password : (req.body.ssh_password ?? null);
   const ssh_port: number = preset?.ssh_port ?? parsePort(req.body.ssh_port, 22);
-  const combineDuplicateSerial = req.body.combine_duplicate_serial === true;
+  const combineWithDeviceId =
+    typeof req.body.combine_with_device_id === 'number' ? req.body.combine_with_device_id : null;
+  const forceReplaceBySerial = req.body.force_replace_existing_by_serial === true;
 
   if (!name || !ip_address || !api_username || !api_password) {
     return res.status(400).json({ error: 'name, ip_address, api_username, api_password are required' });
@@ -227,12 +229,18 @@ router.post('/', requireWrite, async (req: Request, res: Response) => {
     );
 
     if (existingBySerial) {
-      if (!combineDuplicateSerial) {
+      const shouldCombine =
+        combineWithDeviceId != null && combineWithDeviceId === existingBySerial.id;
+      if (!shouldCombine && !forceReplaceBySerial) {
         return res.status(409).json({
-          error: 'A managed device with this serial number already exists',
+          error: 'duplicate_serial',
           code: 'duplicate_serial',
-          serial_number: detectedSerial,
           existing_device: existingBySerial,
+          candidate: {
+            serial_number: detectedSerial,
+            identity: name,
+            ip_address,
+          },
         });
       }
 
