@@ -22,6 +22,9 @@ export default function ConfirmDuplicateModal({
   loading,
 }: Props) {
   const [confirmCombineStep, setConfirmCombineStep] = useState(false);
+  const existingSerial = (duplicate.existing_device.serial_number || '').trim().toUpperCase();
+  const candidateSerial = (duplicate.candidate.serial_number || '').trim().toUpperCase();
+  const serialsMatch = Boolean(existingSerial && candidateSerial && existingSerial === candidateSerial);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="card w-full max-w-xl mx-4">
@@ -52,6 +55,11 @@ export default function ConfirmDuplicateModal({
               <p className="text-xs text-amber-700 dark:text-amber-300/90 mt-2">
                 Only continue if you are certain these represent the same physical device.
               </p>
+              {!serialsMatch && (
+                <p className="text-xs font-semibold text-red-700 dark:text-red-300 mt-2">
+                  Combine is disabled because the serial numbers do not match.
+                </p>
+              )}
             </div>
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -77,7 +85,12 @@ export default function ConfirmDuplicateModal({
               Cancel
             </button>
             {confirmCombineStep ? (
-              <button type="button" onClick={onCombine} disabled={loading} className="btn-secondary inline-flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onCombine}
+                disabled={loading || !serialsMatch}
+                className="btn-secondary inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <GitMerge className="w-4 h-4" />
                 Confirm combine now
               </button>
