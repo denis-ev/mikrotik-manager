@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   ReactFlow,
@@ -20,6 +20,7 @@ import { RefreshCw, GitBranch } from 'lucide-react';
 import { topologyApi } from '../services/api';
 import type { TopologyDevice, TopologyLink, ExternalTopologyNode } from '../types';
 import clsx from 'clsx';
+import { useThemeStore } from '../store/themeStore';
 
 // helper to derive device class from LLDP capabilities
 function capsLabel(caps: string | undefined): string {
@@ -136,17 +137,115 @@ function ExternalNode({ data }: { data: Record<string, unknown> }) {
 
 const nodeTypes = { deviceNode: DeviceNode, externalNode: ExternalNode };
 
+/** Layout box (React Flow uses top-left origin for `position`). */
 const NODE_W = 160;
 const NODE_H = 80;
+/** Conservative hit box so labels / padding do not overlap adjacent nodes */
+const NODE_LAYOUT_W = 220;
+const NODE_LAYOUT_H = 110;
 const H_GAP = 60;             // horizontal spacing between sibling nodes
 const V_GAP = 90;             // vertical spacing between tree levels
 const COMPONENT_GAP = 120;    // gap between disconnected subgraphs
-const NODE_SLOT = NODE_W + H_GAP;
+/** Horizontal slot for tree layout — use layout box width so siblings start far enough apart */
+const NODE_SLOT = NODE_LAYOUT_W + H_GAP;
+const OVERLAP_SEP = 16;       // extra gap when separating overlapping nodes
+
+export interface TopologyLayoutOptions {
+  /** When true, nodes at the same tree depth share one horizontal row (aligned Y). */
+  alignByDepth: boolean;
+}
+
+function rectsOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number }
+): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Push nodes apart until bounding boxes (layout size) no longer overlap. */
+function resolveOverlaps(
+  positions: Map<string, { x: number; y: number }>,
+  opts?: { maxIterations?: number }
+): void {
+  const maxIt = opts?.maxIterations ?? 100;
+  const ids = [...positions.keys()];
+  if (ids.length < 2) return;
+
+  const w = NODE_LAYOUT_W;
+  const h = NODE_LAYOUT_H;
+
+  for (let round = 0; round < maxIt; round++) {
+    let moved = false;
+    const boxes = ids.map((id) => {
+      const p = positions.get(id)!;
+      return { id, x: p.x, y: p.y, w, h };
+    });
+    boxes.sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
+
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const A = boxes[i];
+        const B = boxes[j];
+        if (!rectsOverlap(A, B)) continue;
+
+        const dx = Math.abs((B.x + B.w / 2) - (A.x + A.w / 2));
+        const dy = Math.abs((B.y + B.h / 2) - (A.y + A.h / 2));
+        const pushDown = dy <= dx * 0.85;
+
+        if (pushDown) {
+          const newY = A.y + A.h + OVERLAP_SEP;
+          if (newY !== B.y) {
+            positions.set(B.id, { x: B.x, y: newY });
+            B.y = newY;
+            moved = true;
+          }
+        } else {
+          const shift = B.x >= A.x ? 1 : -1;
+          const newX = B.x + shift * (Math.min(w, h) / 2 + OVERLAP_SEP);
+          if (newX !== B.x) {
+            positions.set(B.id, { x: newX, y: B.y });
+            B.x = newX;
+            moved = true;
+          }
+        }
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+/** Same-depth nodes in one row, non-overlapping horizontally (strict grid). */
+function layoutAlignedRows(
+  positions: Map<string, { x: number; y: number }>,
+  depthById: Map<string, number>
+): void {
+  const rowH = NODE_H + V_GAP;
+  const byDepth = new Map<number, string[]>();
+  for (const [id, d] of depthById) {
+    if (!positions.has(id)) continue;
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d)!.push(id);
+  }
+  const depths = [...byDepth.keys()].sort((a, b) => a - b);
+  for (const d of depths) {
+    const rowIds = byDepth.get(d)!;
+    rowIds.sort((a, b) => (positions.get(a)!.x - positions.get(b)!.x));
+    const slot = NODE_LAYOUT_W + H_GAP;
+    const rowW = rowIds.length * slot - H_GAP;
+    let x = -rowW / 2;
+    const y = d * rowH;
+    for (const id of rowIds) {
+      positions.set(id, { x, y });
+      x += slot;
+    }
+  }
+}
 
 function buildGraph(
   devices: TopologyDevice[],
   externalNodes: ExternalTopologyNode[],
-  links: TopologyLink[]
+  links: TopologyLink[],
+  layout: TopologyLayoutOptions
 ): { nodes: Node[]; edges: Edge[] } {
 
   // ── Shared-segment detection ────────────────────────────────────────────────
@@ -347,6 +446,7 @@ function buildGraph(
   // own children (a simple but effective heuristic for mostly-tree graphs).
 
   const positions = new Map<string, { x: number; y: number }>();
+  const depthById = new Map<string, number>();
 
   let componentOffsetX = 0;
   let globalMaxDepth = 0;
@@ -430,6 +530,8 @@ function buildGraph(
     // Track overall depth and advance the X offset for the next component.
     let compMaxDepth = 0;
     for (const id of comp) {
+      const d = depth.get(id);
+      if (d !== undefined) depthById.set(id, d);
       compMaxDepth = Math.max(compMaxDepth, depth.get(id) || 0);
     }
     globalMaxDepth = Math.max(globalMaxDepth, compMaxDepth);
@@ -445,6 +547,13 @@ function buildGraph(
     for (const [id, p] of positions) {
       positions.set(id, { x: p.x - centerShift, y: p.y });
     }
+  }
+
+  // Optional strict row alignment; otherwise organic tree + overlap separation.
+  if (layout.alignByDepth) {
+    layoutAlignedRows(positions, depthById);
+  } else {
+    resolveOverlaps(positions);
   }
 
   // The STP root badge should only be shown for true STP roots, not just the
@@ -509,7 +618,8 @@ function buildGraph(
       source: src,
       target: dst,
       label: (portLabel + stpLabel) || undefined,
-      labelStyle: { fontSize: 9, fill: '#94a3b8' },
+      labelStyle: { fontSize: 10, fill: 'var(--topology-edge-label, #64748b)' },
+      className: 'topology-edge',
       style: { stroke, strokeWidth: 2, strokeDasharray },
       animated,
     });
@@ -525,7 +635,8 @@ function buildGraph(
       source: src,
       target: dst,
       label: port || undefined,
-      labelStyle: { fontSize: 9, fill: '#b45309' },
+      labelStyle: { fontSize: 10, fill: 'var(--topology-seg-edge-label, #b45309)' },
+      className: 'topology-edge topology-edge--segment',
       style: { stroke: '#f59e0b', strokeWidth: 2, strokeDasharray: '5,3' },
       animated: false,
     });
@@ -535,6 +646,9 @@ function buildGraph(
 }
 
 export default function TopologyPage() {
+  const theme = useThemeStore((s) => s.theme);
+  const [alignRows, setAlignRows] = useState(false);
+
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['topology'],
     queryFn: () => topologyApi.get().then((r) => r.data),
@@ -553,9 +667,10 @@ export default function TopologyPage() {
     return buildGraph(
       (data.devices as TopologyDevice[]) || [],
       (data.externalNodes as ExternalTopologyNode[]) || [],
-      (data.links as TopologyLink[]) || []
+      (data.links as TopologyLink[]) || [],
+      { alignByDepth: alignRows }
     );
-  }, [data]);
+  }, [data, alignRows]);
 
   useEffect(() => {
     setNodes(graph.nodes);
@@ -580,7 +695,18 @@ export default function TopologyPage() {
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">Network Topology</h1>
-        <div className="flex gap-2 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-3 flex-shrink-0">
+          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="rounded border-gray-300 dark:border-slate-600"
+              checked={alignRows}
+              onChange={(e) => setAlignRows(e.target.checked)}
+            />
+            <span title="Place every node at the same tree depth on one horizontal row (strict grid). Off by default: organic tree layout with automatic spacing so labels and nodes do not overlap.">
+              Align by depth (rows)
+            </span>
+          </label>
           <button
             onClick={() => discoverMutation.mutate()}
             disabled={discoverMutation.isPending}
@@ -612,7 +738,7 @@ export default function TopologyPage() {
         </div>
       ) : (
         <>
-          <div className="card" style={{ height: 'min(600px, 60vh)' }}>
+          <div className="card overflow-hidden" style={{ height: 'min(600px, 60vh)' }}>
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -624,11 +750,14 @@ export default function TopologyPage() {
               fitViewOptions={{ padding: 0.2, includeHiddenNodes: false }}
               minZoom={0.2}
               maxZoom={2}
-              className="dark:bg-slate-800"
+              className={clsx(
+                'topology-reactflow h-full min-h-[400px] bg-slate-50 dark:bg-slate-800',
+                theme === 'dark' && 'dark'
+              )}
             >
-              <Controls className="dark:bg-slate-700 dark:text-white" />
+              <Controls className="topology-controls !shadow-md" />
               <MiniMap
-                className="dark:bg-slate-700"
+                className="!shadow-md"
                 nodeColor={(n) => {
                   if (n.type === 'externalNode') return '#94a3b8';
                   const d = n.data as unknown as TopologyDevice;
