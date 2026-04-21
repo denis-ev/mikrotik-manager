@@ -192,20 +192,104 @@ router.post('/', requireWrite, async (req: Request, res: Response) => {
   const ssh_username: string | null = preset ? preset.ssh_username : (req.body.ssh_username ?? null);
   const ssh_password: string | null = preset ? preset.ssh_password : (req.body.ssh_password ?? null);
   const ssh_port: number = preset?.ssh_port ?? parsePort(req.body.ssh_port, 22);
+  const combineWithDeviceId =
+    typeof req.body.combine_with_device_id === 'number' ? req.body.combine_with_device_id : null;
+  const forceReplaceBySerial = req.body.force_replace_existing_by_serial === true;
 
   if (!name || !ip_address || !api_username || !api_password) {
     return res.status(400).json({ error: 'name, ip_address, api_username, api_password are required' });
   }
 
-  // Test connection before saving
+  // Test connection and detect hardware serial before saving
   const testClient = new RouterOSClient(ip_address, api_port, api_username, api_password, 10_000);
+  let detectedSerial: string | null = null;
   try {
     await testClient.connect();
-    testClient.disconnect();
+    const rb = await testClient.execute('/system/routerboard/print').catch(() => [] as Record<string, string>[]);
+    detectedSerial = (rb[0]?.['serial-number'] || '').trim() || null;
   } catch (err) {
     return res.status(422).json({
       error: `Cannot connect to device: ${(err as Error).message}`,
     });
+  } finally {
+    testClient.disconnect();
+  }
+
+  if (detectedSerial) {
+    const existingBySerial = await queryOne<{
+      id: number;
+      name: string;
+      ip_address: string;
+      serial_number: string;
+    }>(
+      `SELECT id, name, ip_address, serial_number
+         FROM devices
+        WHERE serial_number = $1`,
+      [detectedSerial]
+    );
+
+    if (existingBySerial) {
+      const shouldCombine =
+        combineWithDeviceId != null && combineWithDeviceId === existingBySerial.id;
+      if (!shouldCombine && !forceReplaceBySerial) {
+        return res.status(409).json({
+          error: 'duplicate_serial',
+          code: 'duplicate_serial',
+          existing_device: existingBySerial,
+          candidate: {
+            serial_number: detectedSerial,
+            identity: name,
+            ip_address,
+          },
+        });
+      }
+
+      const encryptedPass = encrypt(api_password);
+      const encryptedSshPass = ssh_password ? encrypt(ssh_password) : null;
+      await query(
+        `UPDATE devices SET
+           name=COALESCE($1,name),
+           ip_address=$2,
+           api_port=$3,
+           api_username=$4,
+           api_password_encrypted=$5,
+           ssh_port=$6,
+           ssh_username=COALESCE($7,ssh_username),
+           ssh_password_encrypted=COALESCE($8,ssh_password_encrypted),
+           device_type=COALESCE($9,device_type),
+           notes=COALESCE($10,notes),
+           updated_at=NOW()
+         WHERE id = $11`,
+        [
+          name,
+          ip_address,
+          api_port,
+          api_username,
+          encryptedPass,
+          ssh_port,
+          ssh_username,
+          encryptedSshPass,
+          device_type,
+          notes || null,
+          existingBySerial.id,
+        ]
+      );
+
+      if (pollerService) {
+        await pollerService.scheduleDeviceSync(existingBySerial.id, 'full');
+      }
+
+      const updatedExisting = await queryOne(
+        `SELECT id, name, ip_address, api_port, api_username, model, serial_number,
+                firmware_version, ros_version, device_type, status, last_seen, notes, created_at
+         FROM devices WHERE id = $1`,
+        [existingBySerial.id]
+      );
+      return res.status(200).json({
+        ...(updatedExisting || {}),
+        merged_from_duplicate: true,
+      });
+    }
   }
 
   const encryptedPass = encrypt(api_password);
@@ -874,7 +958,7 @@ router.post('/:id/check-update', async (req: Request, res: Response) => {
     const statusText = (updateInfo['status'] ?? '').toLowerCase();
     const hasUpdate =
       statusText.includes('available') ||
-      (latestVersion && installedVersion && latestVersion !== installedVersion);
+      Boolean(latestVersion && installedVersion && latestVersion !== installedVersion);
 
     await query(
       `UPDATE devices SET firmware_update_available = $1, latest_ros_version = $2, updated_at = NOW() WHERE id = $3`,

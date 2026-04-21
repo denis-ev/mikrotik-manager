@@ -1,7 +1,12 @@
 import { useState, FormEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { X, CheckCircle, AlertCircle, Loader2, KeyRound } from 'lucide-react';
-import { devicesApi, credentialPresetsApi } from '../../services/api';
+import {
+  devicesApi,
+  credentialPresetsApi,
+  type DuplicateSerialError,
+} from '../../services/api';
+import ConfirmDuplicateModal from './ConfirmDuplicateModal';
 
 interface Props {
   onClose: () => void;
@@ -25,6 +30,7 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
   const [presetId, setPresetId] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [duplicateSerial, setDuplicateSerial] = useState<DuplicateSerialError | null>(null);
 
   const { data: presets = [] } = useQuery({
     queryKey: ['credential-presets'],
@@ -35,6 +41,38 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
   const selectedPreset = presetId != null ? presets.find((p) => p.id === presetId) ?? null : null;
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const createPayload = (
+    opts: { combineWithDeviceId?: number; forceReplace?: boolean } = {}
+  ) => {
+    const extra = {
+      combine_with_device_id: opts.combineWithDeviceId,
+      force_replace_existing_by_serial: opts.forceReplace,
+    };
+    if (selectedPreset) {
+      return {
+        name: form.name,
+        ip_address: form.ip_address,
+        device_type: form.device_type as import('../../types').DeviceType,
+        notes: form.notes,
+        credential_preset_id: selectedPreset.id,
+        ...extra,
+      };
+    }
+    return {
+      name: form.name,
+      ip_address: form.ip_address,
+      api_port: parseInt(form.api_port, 10),
+      api_username: form.api_username,
+      api_password: form.api_password,
+      ssh_port: parseInt(form.ssh_port, 10),
+      ssh_username: form.ssh_username || undefined,
+      ssh_password: form.ssh_password || undefined,
+      device_type: form.device_type as import('../../types').DeviceType,
+      notes: form.notes,
+      ...extra,
+    };
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -49,36 +87,57 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
 
     setLoading(true);
     setError('');
+    setDuplicateSerial(null);
     try {
-      if (selectedPreset) {
-        // Preset path — server pulls creds from the preset.
-        await devicesApi.create({
-          name: form.name,
-          ip_address: form.ip_address,
-          device_type: form.device_type as import('../../types').DeviceType,
-          notes: form.notes,
-          credential_preset_id: selectedPreset.id,
-        });
-      } else {
-        await devicesApi.create({
-          name: form.name,
-          ip_address: form.ip_address,
-          api_port: parseInt(form.api_port),
-          api_username: form.api_username,
-          api_password: form.api_password,
-          ssh_port: parseInt(form.ssh_port),
-          ssh_username: form.ssh_username || undefined,
-          ssh_password: form.ssh_password || undefined,
-          device_type: form.device_type as import('../../types').DeviceType,
-          notes: form.notes,
-        });
-      }
+      await devicesApi.create(createPayload());
       onSuccess();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      const data = (err as { response?: { data?: unknown } })?.response?.data;
+      if (
+        status === 409 &&
+        data &&
+        typeof data === 'object' &&
+        (data as { code?: string }).code === 'duplicate_serial'
+      ) {
+        setDuplicateSerial(data as DuplicateSerialError);
+        return;
+      }
+      const msg = (data as { error?: string } | undefined)?.error;
       setError(msg || 'Failed to add device');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCombineDuplicate = async () => {
+    if (!duplicateSerial?.existing_device?.id) return;
+    setLoading(true);
+    setError('');
+    try {
+      await devicesApi.create(createPayload({ combineWithDeviceId: duplicateSerial.existing_device.id }));
+      onSuccess();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || 'Failed to combine duplicate by serial');
+    } finally {
+      setLoading(false);
+      setDuplicateSerial(null);
+    }
+  };
+
+  const handleReplaceDuplicate = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      await devicesApi.create(createPayload({ forceReplace: true }));
+      onSuccess();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || 'Failed to replace duplicate serial details');
+    } finally {
+      setLoading(false);
+      setDuplicateSerial(null);
     }
   };
 
@@ -286,6 +345,19 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
           </div>
         </form>
       </div>
+      {duplicateSerial && (
+        <ConfirmDuplicateModal
+          duplicate={duplicateSerial}
+          pendingName={form.name}
+          pendingIp={form.ip_address}
+          onCancel={() => {
+            setDuplicateSerial(null);
+          }}
+          onCombine={handleCombineDuplicate}
+          onReplace={handleReplaceDuplicate}
+          loading={loading}
+        />
+      )}
     </div>
   );
 }
