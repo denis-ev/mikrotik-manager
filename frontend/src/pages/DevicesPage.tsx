@@ -1,7 +1,21 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, RefreshCw, Router, Wifi, Trash2, ChevronRight, Search, Radar, ArrowUpCircle, Pencil } from 'lucide-react';
+import {
+  Plus,
+  RefreshCw,
+  Router,
+  Wifi,
+  Trash2,
+  ChevronRight,
+  Search,
+  Radar,
+  ArrowUpCircle,
+  Pencil,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+} from 'lucide-react';
 import { devicesApi, topologyApi } from '../services/api';
 import type { Device } from '../types';
 import type { DiscoveredDevice } from '../services/api';
@@ -9,6 +23,43 @@ import { useCanWrite } from '../hooks/useCanWrite';
 import clsx from 'clsx';
 import AddDeviceModal from '../components/devices/AddDeviceModal';
 import EditDeviceModal from '../components/devices/EditDeviceModal';
+import TryAllDiscoveredModal from '../components/devices/TryAllDiscoveredModal';
+
+type DeviceSortKey = 'name' | 'ip_address' | 'model' | 'ros_version' | 'status' | 'last_seen';
+type DiscoveredSortKey = 'identity' | 'address' | 'mac_address' | 'seen_by' | 'discovered_at';
+type SortDir = 'asc' | 'desc';
+
+function SortableHeader({
+  label,
+  active,
+  dir,
+  onClick,
+  align = 'left',
+}: {
+  label: string;
+  active: boolean;
+  dir: SortDir;
+  onClick: () => void;
+  align?: 'left' | 'center' | 'right';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'inline-flex items-center gap-1.5 text-inherit hover:text-gray-900 dark:hover:text-white transition-colors',
+        align === 'center' && 'justify-center',
+        align === 'right' && 'justify-end'
+      )}
+      title={`Sort by ${label}`}
+    >
+      <span>{label}</span>
+      {active ? (dir === 'asc' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />) : (
+        <ArrowUpDown className="w-3.5 h-3.5 opacity-50" />
+      )}
+    </button>
+  );
+}
 
 function StatusDot({ status }: { status: Device['status'] }) {
   return (
@@ -49,6 +100,12 @@ export default function DevicesPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [searching, setSearching] = useState(false);
   const [hideDuplicates, setHideDuplicates] = useState(true);
+  const [showTryAllModal, setShowTryAllModal] = useState(false);
+  const [deviceSort, setDeviceSort] = useState<{ key: DeviceSortKey; dir: SortDir }>({ key: 'name', dir: 'asc' });
+  const [discoveredSort, setDiscoveredSort] = useState<{ key: DiscoveredSortKey; dir: SortDir }>({
+    key: 'discovered_at',
+    dir: 'desc',
+  });
 
   const { data: devices = [], isLoading } = useQuery({
     queryKey: ['devices'],
@@ -75,23 +132,75 @@ export default function DevicesPage() {
     },
   });
 
-  const filtered = devices.filter(
-    (d) =>
-      !search ||
-      d.name.toLowerCase().includes(search.toLowerCase()) ||
-      d.ip_address.includes(search) ||
-      d.model?.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = useMemo(() => {
+    const base = devices.filter(
+      (d) =>
+        !search ||
+        d.name.toLowerCase().includes(search.toLowerCase()) ||
+        d.ip_address.includes(search) ||
+        d.model?.toLowerCase().includes(search.toLowerCase())
+    );
+    const sorted = [...base].sort((a, b) => {
+      const val = (x: Device): string | number => {
+        switch (deviceSort.key) {
+          case 'name': return x.name || '';
+          case 'ip_address': return x.ip_address || '';
+          case 'model': return x.model || '';
+          case 'ros_version': return x.ros_version || '';
+          case 'status': return x.status || '';
+          case 'last_seen': return x.last_seen ? new Date(x.last_seen).getTime() : 0;
+          default: return '';
+        }
+      };
+      const av = val(a);
+      const bv = val(b);
+      const cmp = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+      return deviceSort.dir === 'asc' ? cmp : -cmp;
+    });
+    return sorted;
+  }, [devices, search, deviceSort]);
 
   const discoveredList = discovered as DiscoveredDevice[];
   const duplicateCount = useMemo(
     () => discoveredList.filter((d) => d.duplicate_of_device_id != null).length,
     [discoveredList]
   );
-  const visibleDiscovered = useMemo(
-    () => (hideDuplicates ? discoveredList.filter((d) => d.duplicate_of_device_id == null) : discoveredList),
-    [discoveredList, hideDuplicates]
-  );
+  const visibleDiscovered = useMemo(() => {
+    const base = hideDuplicates ? discoveredList.filter((d) => d.duplicate_of_device_id == null) : discoveredList;
+    const sorted = [...base].sort((a, b) => {
+      const val = (x: DiscoveredDevice): string | number => {
+        switch (discoveredSort.key) {
+          case 'identity': return x.identity || '';
+          case 'address': return x.address || '';
+          case 'mac_address': return x.mac_address || '';
+          case 'seen_by': return x.seen_by || '';
+          case 'discovered_at': return x.discovered_at ? new Date(x.discovered_at).getTime() : 0;
+          default: return '';
+        }
+      };
+      const av = val(a);
+      const bv = val(b);
+      const cmp = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+      return discoveredSort.dir === 'asc' ? cmp : -cmp;
+    });
+    return sorted;
+  }, [discoveredList, hideDuplicates, discoveredSort]);
+
+  const flipSort = <K extends string>(
+    current: { key: K; dir: SortDir },
+    key: K,
+    set: (v: { key: K; dir: SortDir }) => void
+  ) => {
+    if (current.key === key) {
+      set({ key, dir: current.dir === 'asc' ? 'desc' : 'asc' });
+    } else {
+      set({ key, dir: 'asc' });
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -171,12 +280,54 @@ export default function DevicesPage() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-200 dark:border-slate-700">
-                <th className="table-header px-4 py-3">Device</th>
-                <th className="table-header px-4 py-3">IP Address</th>
-                <th className="table-header px-4 py-3">Model</th>
-                <th className="table-header px-4 py-3">ROS Version</th>
-                <th className="table-header px-4 py-3">Status</th>
-                <th className="table-header px-4 py-3">Last Seen</th>
+                <th className="table-header px-4 py-3">
+                  <SortableHeader
+                    label="Device"
+                    active={deviceSort.key === 'name'}
+                    dir={deviceSort.dir}
+                    onClick={() => flipSort(deviceSort, 'name', setDeviceSort)}
+                  />
+                </th>
+                <th className="table-header px-4 py-3">
+                  <SortableHeader
+                    label="IP Address"
+                    active={deviceSort.key === 'ip_address'}
+                    dir={deviceSort.dir}
+                    onClick={() => flipSort(deviceSort, 'ip_address', setDeviceSort)}
+                  />
+                </th>
+                <th className="table-header px-4 py-3">
+                  <SortableHeader
+                    label="Model"
+                    active={deviceSort.key === 'model'}
+                    dir={deviceSort.dir}
+                    onClick={() => flipSort(deviceSort, 'model', setDeviceSort)}
+                  />
+                </th>
+                <th className="table-header px-4 py-3">
+                  <SortableHeader
+                    label="ROS Version"
+                    active={deviceSort.key === 'ros_version'}
+                    dir={deviceSort.dir}
+                    onClick={() => flipSort(deviceSort, 'ros_version', setDeviceSort)}
+                  />
+                </th>
+                <th className="table-header px-4 py-3">
+                  <SortableHeader
+                    label="Status"
+                    active={deviceSort.key === 'status'}
+                    dir={deviceSort.dir}
+                    onClick={() => flipSort(deviceSort, 'status', setDeviceSort)}
+                  />
+                </th>
+                <th className="table-header px-4 py-3">
+                  <SortableHeader
+                    label="Last Seen"
+                    active={deviceSort.key === 'last_seen'}
+                    dir={deviceSort.dir}
+                    onClick={() => flipSort(deviceSort, 'last_seen', setDeviceSort)}
+                  />
+                </th>
                 <th className="table-header px-4 py-3 w-28">Actions</th>
               </tr>
             </thead>
@@ -324,6 +475,15 @@ export default function DevicesPage() {
                 <span className="text-gray-400 dark:text-slate-500">({duplicateCount})</span>
               )}
             </label>
+            {canWrite && visibleDiscovered.length > 0 && (
+              <button
+                onClick={() => setShowTryAllModal(true)}
+                className="btn-primary text-xs py-1.5 px-3"
+                title="Try adding all discovered devices with one credential method"
+              >
+                Try All
+              </button>
+            )}
           </div>
           {visibleDiscovered.length === 0 ? (
             <div className="card p-4 text-xs text-gray-500 dark:text-slate-400 text-center">
@@ -335,11 +495,46 @@ export default function DevicesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-700/50">
-                  <th className="table-header px-4 py-2.5 text-left">Identity</th>
-                  <th className="table-header px-4 py-2.5 text-left">IP Address</th>
-                  <th className="table-header px-4 py-2.5 text-left">MAC Address</th>
-                  <th className="table-header px-4 py-2.5 text-left">Seen By</th>
-                  <th className="table-header px-4 py-2.5 text-left">Last Seen</th>
+                  <th className="table-header px-4 py-2.5 text-left">
+                    <SortableHeader
+                      label="Identity"
+                      active={discoveredSort.key === 'identity'}
+                      dir={discoveredSort.dir}
+                      onClick={() => flipSort(discoveredSort, 'identity', setDiscoveredSort)}
+                    />
+                  </th>
+                  <th className="table-header px-4 py-2.5 text-left">
+                    <SortableHeader
+                      label="IP Address"
+                      active={discoveredSort.key === 'address'}
+                      dir={discoveredSort.dir}
+                      onClick={() => flipSort(discoveredSort, 'address', setDiscoveredSort)}
+                    />
+                  </th>
+                  <th className="table-header px-4 py-2.5 text-left">
+                    <SortableHeader
+                      label="MAC Address"
+                      active={discoveredSort.key === 'mac_address'}
+                      dir={discoveredSort.dir}
+                      onClick={() => flipSort(discoveredSort, 'mac_address', setDiscoveredSort)}
+                    />
+                  </th>
+                  <th className="table-header px-4 py-2.5 text-left">
+                    <SortableHeader
+                      label="Seen By"
+                      active={discoveredSort.key === 'seen_by'}
+                      dir={discoveredSort.dir}
+                      onClick={() => flipSort(discoveredSort, 'seen_by', setDiscoveredSort)}
+                    />
+                  </th>
+                  <th className="table-header px-4 py-2.5 text-left">
+                    <SortableHeader
+                      label="Last Seen"
+                      active={discoveredSort.key === 'discovered_at'}
+                      dir={discoveredSort.dir}
+                      onClick={() => flipSort(discoveredSort, 'discovered_at', setDiscoveredSort)}
+                    />
+                  </th>
                   <th className="table-header px-4 py-2.5 w-36" />
                 </tr>
               </thead>
@@ -426,6 +621,18 @@ export default function DevicesPage() {
           onClose={() => setEditDevice(null)}
           onSuccess={() => {
             setEditDevice(null);
+            queryClient.invalidateQueries({ queryKey: ['devices'] });
+            queryClient.invalidateQueries({ queryKey: ['devices-discovered'] });
+          }}
+        />
+      )}
+
+      {showTryAllModal && (
+        <TryAllDiscoveredModal
+          discoveredDevices={visibleDiscovered.filter((d) => d.duplicate_of_device_id == null && !!d.address)}
+          onClose={() => setShowTryAllModal(false)}
+          onSuccess={() => {
+            setShowTryAllModal(false);
             queryClient.invalidateQueries({ queryKey: ['devices'] });
             queryClient.invalidateQueries({ queryKey: ['devices-discovered'] });
           }}
