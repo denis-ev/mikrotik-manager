@@ -202,6 +202,16 @@ export default function DevicesPage() {
     }
   };
 
+  const discoveredList = discovered as DiscoveredDevice[];
+  const duplicateCount = useMemo(
+    () => discoveredList.filter((d) => d.duplicate_of_device_id != null).length,
+    [discoveredList]
+  );
+  const visibleDiscovered = useMemo(
+    () => (hideDuplicates ? discoveredList.filter((d) => d.duplicate_of_device_id == null) : discoveredList),
+    [discoveredList, hideDuplicates]
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

@@ -392,6 +392,26 @@ router.put('/:id', requireWrite, async (req: Request, res: Response) => {
     credential_preset_id?: number | null;
   };
 
+  const parsePort = (v: unknown, fallback: number): number => {
+    if (v == null || v === '') return fallback;
+    const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  const existing = await queryOne<{
+    id: number;
+    ip_address: string;
+    api_port: number;
+    api_username: string;
+    api_password_encrypted: string;
+    ssh_port: number | null;
+  }>(
+    `SELECT id, ip_address, api_port, api_username, api_password_encrypted, ssh_port
+       FROM devices WHERE id = $1`,
+    [req.params.id]
+  );
+  if (!existing) return res.status(404).json({ error: 'Device not found' });
+
   let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
   try {
     preset = await loadCredentialPreset(credential_preset_id ?? null);
@@ -401,25 +421,12 @@ router.put('/:id', requireWrite, async (req: Request, res: Response) => {
 
   // When a preset is applied, its values take precedence over anything else
   // in the body so "apply preset" has a single unambiguous meaning.
-  const api_port = preset?.api_port ?? req.body.api_port;
+  const api_port = preset?.api_port ?? parsePort(req.body.api_port, existing.api_port);
   const api_username = preset?.api_username ?? req.body.api_username;
   const api_password = preset?.api_password ?? req.body.api_password;
-  const ssh_port = preset?.ssh_port ?? req.body.ssh_port;
+  const ssh_port = preset?.ssh_port ?? parsePort(req.body.ssh_port, existing.ssh_port ?? 22);
   const ssh_username = preset ? preset.ssh_username : req.body.ssh_username;
   const ssh_password = preset ? preset.ssh_password : req.body.ssh_password;
-
-  const existing = await queryOne<{
-    id: number;
-    ip_address: string;
-    api_port: number;
-    api_username: string;
-    api_password_encrypted: string;
-  }>(
-    `SELECT id, ip_address, api_port, api_username, api_password_encrypted
-       FROM devices WHERE id = $1`,
-    [req.params.id]
-  );
-  if (!existing) return res.status(404).json({ error: 'Device not found' });
 
   // If the user is changing the IP (or port / username / password), verify the
   // RouterOS API is still reachable with the new values before persisting —
@@ -430,7 +437,7 @@ router.put('/:id', requireWrite, async (req: Request, res: Response) => {
   const presetReplacesApiCreds = !!preset;
   if (ipChanged || portChanged || userChanged || api_password || presetReplacesApiCreds) {
     const testIp = ip_address ?? existing.ip_address;
-    const testPort = (typeof api_port === 'number' ? api_port : undefined) ?? existing.api_port;
+    const testPort = api_port;
     const testUser = api_username ?? existing.api_username;
     const testPass = api_password ? api_password : decrypt(existing.api_password_encrypted);
     const testClient = new RouterOSClient(testIp, testPort, testUser, testPass, 10_000);
