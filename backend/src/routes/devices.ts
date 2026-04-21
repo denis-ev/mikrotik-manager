@@ -5,6 +5,35 @@ import { encrypt, decrypt } from '../utils/crypto';
 import { RouterOSClient } from '../services/mikrotik/RouterOSClient';
 import { DeviceCollector, DeviceRow } from '../services/mikrotik/DeviceCollector';
 import { PollerService } from '../services/PollerService';
+import type { CredentialPresetRow } from './credentialPresets';
+
+// Resolve a credential preset id into decrypted credentials. Returns null if
+// no id was provided; throws a readable error if the id is invalid.
+async function loadCredentialPreset(
+  id: number | null | undefined
+): Promise<{
+  api_username: string;
+  api_password: string;
+  api_port: number | null;
+  ssh_username: string | null;
+  ssh_password: string | null;
+  ssh_port: number | null;
+} | null> {
+  if (id === null || id === undefined) return null;
+  const preset = await queryOne<CredentialPresetRow>(
+    `SELECT * FROM credential_presets WHERE id = $1`,
+    [id]
+  );
+  if (!preset) throw new Error(`Credential preset ${id} not found`);
+  return {
+    api_username: preset.api_username,
+    api_password: decrypt(preset.api_password_encrypted),
+    api_port: preset.api_port,
+    ssh_username: preset.ssh_username,
+    ssh_password: preset.ssh_password_encrypted ? decrypt(preset.ssh_password_encrypted) : null,
+    ssh_port: preset.ssh_port,
+  };
+}
 
 const router = Router();
 router.use(requireAuth);
@@ -100,8 +129,28 @@ router.get('/discovered', async (_req: Request, res: Response) => {
 
 // POST /api/devices
 router.post('/', requireWrite, async (req: Request, res: Response) => {
-  const { name, ip_address, api_port = 8728, api_username, api_password,
-          ssh_port = 22, ssh_username, ssh_password, device_type = 'router', notes } = req.body;
+  const {
+    name, ip_address, device_type = 'router', notes,
+    credential_preset_id,
+  } = req.body as { name?: string; ip_address?: string; device_type?: string; notes?: string; credential_preset_id?: number | null };
+
+  // If a preset is supplied, its credentials win over anything else in the
+  // body — the client just needs to say "use preset 3". Anything the body
+  // also sends (like ssh_username) is ignored in favor of preset values, so
+  // "deploying" a preset always produces a consistent device record.
+  let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
+  try {
+    preset = await loadCredentialPreset(credential_preset_id ?? null);
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message });
+  }
+
+  const api_username: string | undefined = preset?.api_username ?? req.body.api_username;
+  const api_password: string | undefined = preset?.api_password ?? req.body.api_password;
+  const api_port: number = preset?.api_port ?? req.body.api_port ?? 8728;
+  const ssh_username: string | null = preset ? preset.ssh_username : (req.body.ssh_username ?? null);
+  const ssh_password: string | null = preset ? preset.ssh_password : (req.body.ssh_password ?? null);
+  const ssh_port: number = preset?.ssh_port ?? req.body.ssh_port ?? 22;
 
   if (!name || !ip_address || !api_username || !api_password) {
     return res.status(400).json({ error: 'name, ip_address, api_username, api_password are required' });
@@ -204,8 +253,26 @@ router.patch('/:id/location', requireWrite, async (req: Request, res: Response) 
 
 // PUT /api/devices/:id
 router.put('/:id', requireWrite, async (req: Request, res: Response) => {
-  const { name, api_port, api_username, api_password, ssh_port, ssh_username,
-          ssh_password, device_type, notes } = req.body;
+  const { name, device_type, notes, credential_preset_id } = req.body as {
+    name?: string; device_type?: string; notes?: string;
+    credential_preset_id?: number | null;
+  };
+
+  let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
+  try {
+    preset = await loadCredentialPreset(credential_preset_id ?? null);
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message });
+  }
+
+  // When a preset is applied, its values take precedence over anything else
+  // in the body so "apply preset" has a single unambiguous meaning.
+  const api_port      = preset?.api_port      ?? req.body.api_port;
+  const api_username  = preset?.api_username  ?? req.body.api_username;
+  const api_password  = preset?.api_password  ?? req.body.api_password;
+  const ssh_port      = preset?.ssh_port      ?? req.body.ssh_port;
+  const ssh_username  = preset ? preset.ssh_username : req.body.ssh_username;
+  const ssh_password  = preset ? preset.ssh_password : req.body.ssh_password;
 
   const existing = await queryOne<{ id: number; api_password_encrypted: string }>(
     `SELECT id, api_password_encrypted FROM devices WHERE id = $1`,
