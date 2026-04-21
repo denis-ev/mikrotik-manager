@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { X, Loader2, CheckCircle, AlertCircle, KeyRound } from 'lucide-react';
 import { credentialPresetsApi, devicesApi, type DiscoveredDevice } from '../../services/api';
@@ -26,12 +26,14 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
   });
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<ResultItem[] | null>(null);
+  const [cancelled, setCancelled] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number; currentName: string }>({
     current: 0,
     total: 0,
     currentName: '',
   });
   const [error, setError] = useState('');
+  const cancelRef = useRef(false);
 
   const { data: presets = [] } = useQuery({
     queryKey: ['credential-presets'],
@@ -46,6 +48,8 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
 
   const handleRun = async () => {
     setError('');
+    setCancelled(false);
+    cancelRef.current = false;
     setResults(null);
     if (!targets.length) {
       setError('No discovered devices with a usable IP address.');
@@ -64,6 +68,7 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
     setProgress({ current: 0, total: targets.length, currentName: '' });
     const out: ResultItem[] = [];
     for (let i = 0; i < targets.length; i++) {
+      if (cancelRef.current) break;
       const d = targets[i];
       const name = d.identity || d.address;
       setProgress({ current: i + 1, total: targets.length, currentName: name });
@@ -98,6 +103,7 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
     setResults(out);
     setRunning(false);
     setProgress((p) => ({ ...p, currentName: '' }));
+    if (cancelRef.current) setCancelled(true);
   };
 
   const okCount = results?.filter((r) => r.ok).length ?? 0;
@@ -199,13 +205,22 @@ export default function TryAllDiscoveredModal({ discoveredDevices, onClose, onSu
                   style={{ width: `${progress.total ? Math.round((progress.current / progress.total) * 100) : 0}%` }}
                 />
               </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => { cancelRef.current = true; }}
+                  className="btn-secondary text-xs py-1 px-2"
+                >
+                  Stop / Cancel
+                </button>
+              </div>
             </div>
           )}
 
           {results && (
             <div className="space-y-2">
               <div className="text-sm text-gray-700 dark:text-slate-300">
-                {running ? 'Live results:' : 'Done:'}{' '}
+                {running ? 'Live results:' : cancelled ? 'Cancelled:' : 'Done:'}{' '}
                 <span className="text-green-600 dark:text-green-400">{okCount} succeeded</span>,{' '}
                 <span className="text-red-600 dark:text-red-400">{failCount} failed</span>
               </div>
