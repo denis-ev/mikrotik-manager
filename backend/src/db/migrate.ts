@@ -173,8 +173,18 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS rack_name VARCHAR(100);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS rack_slot VARCHAR(20);
 ALTER TABLE topology_links ADD COLUMN IF NOT EXISTS neighbor_caps VARCHAR(255);
 ALTER TABLE topology_links ADD COLUMN IF NOT EXISTS discovered_by VARCHAR(50);
+-- RouterOS can return a long comma-separated discovered-by list; 50 chars was too small.
+ALTER TABLE topology_links ALTER COLUMN discovered_by TYPE VARCHAR(512);
+-- Interface names from neighbor discovery can exceed 50 chars (long bridge/bond names).
+ALTER TABLE topology_links ALTER COLUMN from_interface TYPE VARCHAR(512);
+ALTER TABLE topology_links ALTER COLUMN to_interface TYPE VARCHAR(512);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS firmware_update_available BOOLEAN DEFAULT FALSE;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS latest_ros_version VARCHAR(20);
+
+-- Cached IPv4/IPv6 addresses from /ip/address (per device) for topology resolution:
+-- neighbors seen only by IP (CDP/MNDP) can be matched to managed devices even
+-- when the address is not the device's management IP.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS ip_addresses_jsonb JSONB;
 
 -- Allow multiple neighbors per interface (one row per neighbor, not per port)
 ALTER TABLE topology_links DROP CONSTRAINT IF EXISTS topology_links_from_device_id_from_interface_key;
@@ -259,6 +269,24 @@ CREATE TABLE IF NOT EXISTS ap_scan_data (
 );
 CREATE INDEX IF NOT EXISTS idx_ap_scan_device
   ON ap_scan_data(device_id, scanned_at DESC);
+
+-- Device credential presets — reusable API/SSH credential sets, referenced
+-- by name when adding or editing a managed device. Passwords are stored
+-- encrypted at rest (same scheme as devices.api_password_encrypted) so the
+-- plaintext never leaves the backend.
+CREATE TABLE IF NOT EXISTS credential_presets (
+  id                      SERIAL PRIMARY KEY,
+  name                    VARCHAR(100) NOT NULL UNIQUE,
+  api_username            VARCHAR(50)  NOT NULL,
+  api_password_encrypted  TEXT         NOT NULL,
+  api_port                INTEGER,
+  ssh_username            VARCHAR(50),
+  ssh_password_encrypted  TEXT,
+  ssh_port                INTEGER,
+  notes                   TEXT,
+  created_at              TIMESTAMPTZ DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- Wireless security profiles (WPA/WPA2/WPA3 config)
 CREATE TABLE IF NOT EXISTS wireless_security_profiles (

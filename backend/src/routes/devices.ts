@@ -5,6 +5,35 @@ import { encrypt, decrypt } from '../utils/crypto';
 import { RouterOSClient } from '../services/mikrotik/RouterOSClient';
 import { DeviceCollector, DeviceRow } from '../services/mikrotik/DeviceCollector';
 import { PollerService } from '../services/PollerService';
+import type { CredentialPresetRow } from './credentialPresets';
+
+// Resolve a credential preset id into decrypted credentials. Returns null if
+// no id was provided; throws a readable error if the id is invalid.
+async function loadCredentialPreset(
+  id: number | null | undefined
+): Promise<{
+  api_username: string;
+  api_password: string;
+  api_port: number | null;
+  ssh_username: string | null;
+  ssh_password: string | null;
+  ssh_port: number | null;
+} | null> {
+  if (id === null || id === undefined) return null;
+  const preset = await queryOne<CredentialPresetRow>(
+    `SELECT * FROM credential_presets WHERE id = $1`,
+    [id]
+  );
+  if (!preset) throw new Error(`Credential preset ${id} not found`);
+  return {
+    api_username: preset.api_username,
+    api_password: decrypt(preset.api_password_encrypted),
+    api_port: preset.api_port,
+    ssh_username: preset.ssh_username,
+    ssh_password: preset.ssh_password_encrypted ? decrypt(preset.ssh_password_encrypted) : null,
+    ssh_port: preset.ssh_port,
+  };
+}
 
 const router = Router();
 router.use(requireAuth);
@@ -71,6 +100,32 @@ router.get('/discovered', async (_req: Request, res: Response) => {
     ORDER BY tl.discovered_at DESC
   `);
 
+  // Build lookup tables for "is this actually a managed device we already know?"
+  // We match a discovered neighbor to a managed device by any of:
+  //   - its MAC matching any interface MAC of a managed device,
+  //   - its IP matching the managed device's primary ip_address,
+  //   - its identity matching the managed device's name.
+  const [managedByMac, managedByIp, managedByName] = await Promise.all([
+    query<{ device_id: number; device_name: string; mac: string }>(
+      `SELECT i.device_id AS device_id, d.name AS device_name, LOWER(i.mac_address) AS mac
+         FROM interfaces i
+         JOIN devices d ON d.id = i.device_id
+        WHERE i.mac_address IS NOT NULL AND i.mac_address <> ''`
+    ),
+    query<{ id: number; name: string; ip_address: string }>(
+      `SELECT id, name, ip_address FROM devices WHERE ip_address IS NOT NULL AND ip_address <> ''`
+    ),
+    query<{ id: number; name: string }>(
+      `SELECT id, name FROM devices WHERE name IS NOT NULL AND name <> ''`
+    ),
+  ]);
+  const macToDevice = new Map<string, { id: number; name: string }>();
+  for (const r of managedByMac) macToDevice.set(r.mac, { id: r.device_id, name: r.device_name });
+  const ipToDevice = new Map<string, { id: number; name: string }>();
+  for (const r of managedByIp) ipToDevice.set(r.ip_address, { id: r.id, name: r.name });
+  const nameToDevice = new Map<string, { id: number; name: string }>();
+  for (const r of managedByName) nameToDevice.set(r.name.toLowerCase(), { id: r.id, name: r.name });
+
   // Deduplicate by MAC (most reliable), fallback to IP, then identity
   const seen = new Map<string, typeof rows[0] & { seen_by_list: string[] }>();
   for (const row of rows) {
@@ -86,36 +141,161 @@ router.get('/discovered', async (_req: Request, res: Response) => {
     }
   }
 
-  const results = Array.from(seen.values()).map((r) => ({
-    identity: r.neighbor_identity || '',
-    address: r.neighbor_address || '',
-    mac_address: r.neighbor_mac || '',
-    platform: r.neighbor_platform || '',
-    discovered_at: r.discovered_at,
-    seen_by: r.seen_by_list.join(', '),
-  }));
+  const results = Array.from(seen.values()).map((r) => {
+    const mac = (r.neighbor_mac || '').toLowerCase();
+    const match =
+      (mac && macToDevice.get(mac)) ||
+      (r.neighbor_address && ipToDevice.get(r.neighbor_address)) ||
+      (r.neighbor_identity && nameToDevice.get(r.neighbor_identity.toLowerCase())) ||
+      null;
+    return {
+      identity: r.neighbor_identity || '',
+      address: r.neighbor_address || '',
+      mac_address: r.neighbor_mac || '',
+      platform: r.neighbor_platform || '',
+      discovered_at: r.discovered_at,
+      seen_by: r.seen_by_list.join(', '),
+      duplicate_of_device_id: match ? match.id : null,
+      duplicate_of_device_name: match ? match.name : null,
+    };
+  });
 
   res.json(results);
 });
 
 // POST /api/devices
 router.post('/', requireWrite, async (req: Request, res: Response) => {
-  const { name, ip_address, api_port = 8728, api_username, api_password,
-          ssh_port = 22, ssh_username, ssh_password, device_type = 'router', notes } = req.body;
+  const {
+    name, ip_address, device_type = 'router', notes,
+    credential_preset_id,
+  } = req.body as { name?: string; ip_address?: string; device_type?: string; notes?: string; credential_preset_id?: number | null };
+
+  // If a preset is supplied, its credentials win over anything else in the
+  // body — the client just needs to say "use preset 3". Anything the body
+  // also sends (like ssh_username) is ignored in favor of preset values, so
+  // "deploying" a preset always produces a consistent device record.
+  let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
+  try {
+    preset = await loadCredentialPreset(credential_preset_id ?? null);
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message });
+  }
+
+  const api_username: string | undefined = preset?.api_username ?? req.body.api_username;
+  const api_password: string | undefined = preset?.api_password ?? req.body.api_password;
+  const parsePort = (v: unknown, fallback: number): number => {
+    if (v == null || v === '') return fallback;
+    const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  const api_port: number = preset?.api_port ?? parsePort(req.body.api_port, 8728);
+  const ssh_username: string | null = preset ? preset.ssh_username : (req.body.ssh_username ?? null);
+  const ssh_password: string | null = preset ? preset.ssh_password : (req.body.ssh_password ?? null);
+  const ssh_port: number = preset?.ssh_port ?? parsePort(req.body.ssh_port, 22);
+  const combineWithDeviceId =
+    typeof req.body.combine_with_device_id === 'number' ? req.body.combine_with_device_id : null;
+  const forceReplaceBySerial = req.body.force_replace_existing_by_serial === true;
 
   if (!name || !ip_address || !api_username || !api_password) {
     return res.status(400).json({ error: 'name, ip_address, api_username, api_password are required' });
   }
 
-  // Test connection before saving
+  // Test connection and detect hardware serial before saving
   const testClient = new RouterOSClient(ip_address, api_port, api_username, api_password, 10_000);
+  let detectedSerial: string | null = null;
   try {
     await testClient.connect();
-    testClient.disconnect();
+    const rb = await testClient.execute('/system/routerboard/print').catch(() => [] as Record<string, string>[]);
+    detectedSerial = (rb[0]?.['serial-number'] || '').trim() || null;
   } catch (err) {
     return res.status(422).json({
       error: `Cannot connect to device: ${(err as Error).message}`,
     });
+  } finally {
+    testClient.disconnect();
+  }
+
+  if (detectedSerial) {
+    const existingBySerial = await queryOne<{
+      id: number;
+      name: string;
+      ip_address: string;
+      serial_number: string;
+    }>(
+      `SELECT id, name, ip_address, serial_number
+         FROM devices
+        WHERE serial_number = $1`,
+      [detectedSerial]
+    );
+
+    if (existingBySerial) {
+      const shouldCombine =
+        combineWithDeviceId != null && combineWithDeviceId === existingBySerial.id;
+      if (!shouldCombine && !forceReplaceBySerial) {
+        return res.status(409).json({
+          error: 'duplicate_serial',
+          code: 'duplicate_serial',
+          existing_device: existingBySerial,
+          candidate: {
+            serial_number: detectedSerial,
+            identity: name,
+            ip_address,
+          },
+        });
+      }
+
+      const encryptedPass = encrypt(api_password);
+      const encryptedSshPass = ssh_password ? encrypt(ssh_password) : null;
+      await query(
+        `UPDATE devices SET
+           name=COALESCE($1,name),
+           ip_address=$2,
+           api_port=$3,
+           api_username=$4,
+           api_password_encrypted=$5,
+           ssh_port=$6,
+           ssh_username=COALESCE($7,ssh_username),
+           ssh_password_encrypted=COALESCE($8,ssh_password_encrypted),
+           device_type=COALESCE($9,device_type),
+           notes=COALESCE($10,notes),
+           updated_at=NOW()
+         WHERE id = $11`,
+        [
+          name,
+          ip_address,
+          api_port,
+          api_username,
+          encryptedPass,
+          ssh_port,
+          ssh_username,
+          encryptedSshPass,
+          device_type,
+          notes || null,
+          existingBySerial.id,
+        ]
+      );
+
+      if (pollerService) {
+        await pollerService.scheduleDeviceSync(existingBySerial.id, 'full');
+      }
+
+      const updatedExisting = await queryOne(
+        `SELECT id, name, ip_address, api_port, api_username, model, serial_number,
+                firmware_version, ros_version, device_type, status, last_seen, notes, created_at
+         FROM devices WHERE id = $1`,
+        [existingBySerial.id]
+      );
+      if (!updatedExisting) {
+        return res.status(500).json({
+          error: 'Duplicate merge succeeded but device row could not be reloaded',
+          device_id: existingBySerial.id,
+        });
+      }
+      return res.status(200).json({
+        ...updatedExisting,
+        merged_from_duplicate: true,
+      });
+    }
   }
 
   const encryptedPass = encrypt(api_password);
@@ -204,28 +384,80 @@ router.patch('/:id/location', requireWrite, async (req: Request, res: Response) 
 
 // PUT /api/devices/:id
 router.put('/:id', requireWrite, async (req: Request, res: Response) => {
-  const { name, api_port, api_username, api_password, ssh_port, ssh_username,
-          ssh_password, device_type, notes } = req.body;
+  const { name, ip_address, device_type, notes, credential_preset_id } = req.body as {
+    name?: string;
+    ip_address?: string;
+    device_type?: string;
+    notes?: string;
+    credential_preset_id?: number | null;
+  };
 
-  const existing = await queryOne<{ id: number; api_password_encrypted: string }>(
-    `SELECT id, api_password_encrypted FROM devices WHERE id = $1`,
+  let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
+  try {
+    preset = await loadCredentialPreset(credential_preset_id ?? null);
+  } catch (err) {
+    return res.status(400).json({ error: (err as Error).message });
+  }
+
+  // When a preset is applied, its values take precedence over anything else
+  // in the body so "apply preset" has a single unambiguous meaning.
+  const api_port = preset?.api_port ?? req.body.api_port;
+  const api_username = preset?.api_username ?? req.body.api_username;
+  const api_password = preset?.api_password ?? req.body.api_password;
+  const ssh_port = preset?.ssh_port ?? req.body.ssh_port;
+  const ssh_username = preset ? preset.ssh_username : req.body.ssh_username;
+  const ssh_password = preset ? preset.ssh_password : req.body.ssh_password;
+
+  const existing = await queryOne<{
+    id: number;
+    ip_address: string;
+    api_port: number;
+    api_username: string;
+    api_password_encrypted: string;
+  }>(
+    `SELECT id, ip_address, api_port, api_username, api_password_encrypted
+       FROM devices WHERE id = $1`,
     [req.params.id]
   );
   if (!existing) return res.status(404).json({ error: 'Device not found' });
+
+  // If the user is changing the IP (or port / username / password), verify the
+  // RouterOS API is still reachable with the new values before persisting —
+  // otherwise we could silently brick the device record.
+  const ipChanged = typeof ip_address === 'string' && ip_address && ip_address !== existing.ip_address;
+  const portChanged = typeof api_port === 'number' && api_port !== existing.api_port;
+  const userChanged = typeof api_username === 'string' && api_username && api_username !== existing.api_username;
+  const presetReplacesApiCreds = !!preset;
+  if (ipChanged || portChanged || userChanged || api_password || presetReplacesApiCreds) {
+    const testIp = ip_address ?? existing.ip_address;
+    const testPort = (typeof api_port === 'number' ? api_port : undefined) ?? existing.api_port;
+    const testUser = api_username ?? existing.api_username;
+    const testPass = api_password ? api_password : decrypt(existing.api_password_encrypted);
+    const testClient = new RouterOSClient(testIp, testPort, testUser, testPass, 10_000);
+    try {
+      await testClient.connect();
+      testClient.disconnect();
+    } catch (err) {
+      return res.status(422).json({
+        error: `Cannot connect to device with new settings: ${(err as Error).message}`,
+      });
+    }
+  }
 
   const encPass = api_password ? encrypt(api_password) : existing.api_password_encrypted;
   const encSshPass = ssh_password ? encrypt(ssh_password) : null;
 
   await query(
     `UPDATE devices SET
-       name=COALESCE($1,name), api_port=COALESCE($2,api_port),
-       api_username=COALESCE($3,api_username), api_password_encrypted=$4,
-       ssh_port=COALESCE($5,ssh_port), ssh_username=COALESCE($6,ssh_username),
-       ssh_password_encrypted=COALESCE($7,ssh_password_encrypted),
-       device_type=COALESCE($8,device_type), notes=COALESCE($9,notes),
+       name=COALESCE($1,name), ip_address=COALESCE($2,ip_address),
+       api_port=COALESCE($3,api_port),
+       api_username=COALESCE($4,api_username), api_password_encrypted=$5,
+       ssh_port=COALESCE($6,ssh_port), ssh_username=COALESCE($7,ssh_username),
+       ssh_password_encrypted=COALESCE($8,ssh_password_encrypted),
+       device_type=COALESCE($9,device_type), notes=COALESCE($10,notes),
        updated_at=NOW()
-     WHERE id = $10`,
-    [name, api_port, api_username, encPass, ssh_port, ssh_username, encSshPass, device_type, notes, req.params.id]
+     WHERE id = $11`,
+    [name, ip_address, api_port, api_username, encPass, ssh_port, ssh_username, encSshPass, device_type, notes, req.params.id]
   );
 
   const updated = await queryOne(
@@ -732,7 +964,7 @@ router.post('/:id/check-update', async (req: Request, res: Response) => {
     const statusText = (updateInfo['status'] ?? '').toLowerCase();
     const hasUpdate =
       statusText.includes('available') ||
-      (latestVersion && installedVersion && latestVersion !== installedVersion);
+      Boolean(latestVersion && installedVersion && latestVersion !== installedVersion);
 
     await query(
       `UPDATE devices SET firmware_update_available = $1, latest_ros_version = $2, updated_at = NOW() WHERE id = $3`,

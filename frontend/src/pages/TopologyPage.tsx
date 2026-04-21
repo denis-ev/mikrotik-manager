@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   ReactFlow,
@@ -20,6 +20,7 @@ import { RefreshCw, GitBranch } from 'lucide-react';
 import { topologyApi } from '../services/api';
 import type { TopologyDevice, TopologyLink, ExternalTopologyNode } from '../types';
 import clsx from 'clsx';
+import { useThemeStore } from '../store/themeStore';
 
 // helper to derive device class from LLDP capabilities
 function capsLabel(caps: string | undefined): string {
@@ -136,15 +137,115 @@ function ExternalNode({ data }: { data: Record<string, unknown> }) {
 
 const nodeTypes = { deviceNode: DeviceNode, externalNode: ExternalNode };
 
+/** Layout box (React Flow uses top-left origin for `position`). */
 const NODE_W = 160;
 const NODE_H = 80;
-const H_GAP = 60;
-const V_GAP = 90;
+/** Conservative hit box so labels / padding do not overlap adjacent nodes */
+const NODE_LAYOUT_W = 220;
+const NODE_LAYOUT_H = 110;
+const H_GAP = 60;             // horizontal spacing between sibling nodes
+const V_GAP = 90;             // vertical spacing between tree levels
+const COMPONENT_GAP = 120;    // gap between disconnected subgraphs
+/** Horizontal slot for tree layout — use layout box width so siblings start far enough apart */
+const NODE_SLOT = NODE_LAYOUT_W + H_GAP;
+const OVERLAP_SEP = 16;       // extra gap when separating overlapping nodes
+
+export interface TopologyLayoutOptions {
+  /** When true, nodes at the same tree depth share one horizontal row (aligned Y). */
+  alignByDepth: boolean;
+}
+
+function rectsOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number }
+): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Push nodes apart until bounding boxes (layout size) no longer overlap. */
+function resolveOverlaps(
+  positions: Map<string, { x: number; y: number }>,
+  opts?: { maxIterations?: number }
+): void {
+  const maxIt = opts?.maxIterations ?? 100;
+  const ids = [...positions.keys()];
+  if (ids.length < 2) return;
+
+  const w = NODE_LAYOUT_W;
+  const h = NODE_LAYOUT_H;
+
+  for (let round = 0; round < maxIt; round++) {
+    let moved = false;
+    const boxes = ids.map((id) => {
+      const p = positions.get(id)!;
+      return { id, x: p.x, y: p.y, w, h };
+    });
+    boxes.sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y));
+
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const A = boxes[i];
+        const B = boxes[j];
+        if (!rectsOverlap(A, B)) continue;
+
+        const dx = Math.abs((B.x + B.w / 2) - (A.x + A.w / 2));
+        const dy = Math.abs((B.y + B.h / 2) - (A.y + A.h / 2));
+        const pushDown = dy <= dx * 0.85;
+
+        if (pushDown) {
+          const newY = A.y + A.h + OVERLAP_SEP;
+          if (newY !== B.y) {
+            positions.set(B.id, { x: B.x, y: newY });
+            B.y = newY;
+            moved = true;
+          }
+        } else {
+          const shift = B.x >= A.x ? 1 : -1;
+          const newX = B.x + shift * (Math.min(w, h) / 2 + OVERLAP_SEP);
+          if (newX !== B.x) {
+            positions.set(B.id, { x: newX, y: B.y });
+            B.x = newX;
+            moved = true;
+          }
+        }
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+/** Same-depth nodes in one row, non-overlapping horizontally (strict grid). */
+function layoutAlignedRows(
+  positions: Map<string, { x: number; y: number }>,
+  depthById: Map<string, number>
+): void {
+  const rowH = NODE_H + V_GAP;
+  const byDepth = new Map<number, string[]>();
+  for (const [id, d] of depthById) {
+    if (!positions.has(id)) continue;
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d)!.push(id);
+  }
+  const depths = [...byDepth.keys()].sort((a, b) => a - b);
+  for (const d of depths) {
+    const rowIds = byDepth.get(d)!;
+    rowIds.sort((a, b) => (positions.get(a)!.x - positions.get(b)!.x));
+    const slot = NODE_LAYOUT_W + H_GAP;
+    const rowW = rowIds.length * slot - H_GAP;
+    let x = -rowW / 2;
+    const y = d * rowH;
+    for (const id of rowIds) {
+      positions.set(id, { x, y });
+      x += slot;
+    }
+  }
+}
 
 function buildGraph(
   devices: TopologyDevice[],
   externalNodes: ExternalTopologyNode[],
-  links: TopologyLink[]
+  links: TopologyLink[],
+  layout: TopologyLayoutOptions
 ): { nodes: Node[]; edges: Edge[] } {
 
   // ── Shared-segment detection ────────────────────────────────────────────────
@@ -203,11 +304,6 @@ function buildGraph(
     if (!segGroups.has(root)) segGroups.set(root, []);
     segGroups.get(root)!.push(pk);
   }
-
-  // IDs of all links absorbed into segments (not rendered as direct edges)
-  const absorbedIds = new Set<number>(
-    sharedPortKeys.flatMap((pk) => portGroupMap.get(pk)!.map((l) => l.id))
-  );
 
   // Build synthetic segment nodes and their connections
   interface SegConn { src: string; dst: string; port: string; }
@@ -292,67 +388,198 @@ function buildGraph(
     }
   }
 
-  // ── Root / BFS levels ───────────────────────────────────────────────────────
+  // ── Root selection ──────────────────────────────────────────────────────────
   const hasStp = links.some((l) => l.stp_role);
-  let rootId: string;
-  if (hasStp) {
-    const devicesWithRootPort = new Set(
-      links.filter((l) => l.stp_role === 'root').map((l) => String(l.from_device_id))
-    );
-    const rootDevice = devices.find((d) => !devicesWithRootPort.has(String(d.id)));
-    rootId = rootDevice ? String(rootDevice.id) : devices[0] ? String(devices[0].id) : '';
-  } else {
-    rootId = devices.reduce((best, d) =>
-      (adj.get(String(d.id))?.size || 0) > (adj.get(best)?.size || 0) ? String(d.id) : best,
-      devices[0] ? String(devices[0].id) : ''
-    );
+  const deviceIds = new Set(devices.map((d) => String(d.id)));
+
+  // Pick the best root per connected component so forests lay out cleanly.
+  function pickRoot(componentIds: string[]): string {
+    const stpRoot = hasStp
+      ? (() => {
+          const haveRootPort = new Set(
+            links.filter((l) => l.stp_role === 'root').map((l) => String(l.from_device_id))
+          );
+          return componentIds.find((id) => deviceIds.has(id) && !haveRootPort.has(id));
+        })()
+      : undefined;
+    if (stpRoot) return stpRoot;
+
+    const inThisComponent = new Set(componentIds);
+    // Prefer managed devices with the most in-component neighbors.
+    let best = componentIds[0];
+    let bestScore = -1;
+    for (const id of componentIds) {
+      const neighborCount = [...(adj.get(id) || [])].filter((n) => inThisComponent.has(n)).length;
+      const score = (deviceIds.has(id) ? 1000 : 0) + neighborCount;
+      if (score > bestScore) {
+        best = id;
+        bestScore = score;
+      }
+    }
+    return best;
   }
 
-  const levels = new Map<string, number>();
-  if (rootId) {
-    const queue: string[] = [rootId];
-    levels.set(rootId, 0);
-    while (queue.length) {
-      const curr = queue.shift()!;
-      for (const neighbor of adj.get(curr) || []) {
-        if (!levels.has(neighbor)) {
-          levels.set(neighbor, levels.get(curr)! + 1);
-          queue.push(neighbor);
-        }
+  // ── Connected components ────────────────────────────────────────────────────
+  const allIds = [...devices.map((d) => String(d.id)), ...allExtNodes.map((e) => e.id)];
+  const visited = new Set<string>();
+  const components: string[][] = [];
+  for (const id of allIds) {
+    if (visited.has(id)) continue;
+    const stack = [id];
+    const comp: string[] = [];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (visited.has(n)) continue;
+      visited.add(n);
+      comp.push(n);
+      for (const m of adj.get(n) || []) if (!visited.has(m)) stack.push(m);
+    }
+    components.push(comp);
+  }
+  // Biggest components first — nicer visual priority.
+  components.sort((a, b) => b.length - a.length);
+
+  // ── Tidy-tree layout per component (Reingold-Tilford style) ─────────────────
+  // For each component we build a spanning tree via BFS from its root, then
+  // assign x positions bottom-up using subtree widths. Siblings are ordered to
+  // minimize edge crossings by placing each child near the barycenter of its
+  // own children (a simple but effective heuristic for mostly-tree graphs).
+
+  const positions = new Map<string, { x: number; y: number }>();
+  const depthById = new Map<string, number>();
+
+  let componentOffsetX = 0;
+  let globalMaxDepth = 0;
+
+  for (const comp of components) {
+    if (!comp.length) continue;
+    const compSet = new Set(comp);
+    const rootId = pickRoot(comp);
+
+    // BFS to build a spanning tree (depth + children) for this component.
+    const depth = new Map<string, number>();
+    const children = new Map<string, string[]>();
+    const bfs = [rootId];
+    depth.set(rootId, 0);
+    children.set(rootId, []);
+    while (bfs.length) {
+      const curr = bfs.shift()!;
+      for (const n of adj.get(curr) || []) {
+        if (!compSet.has(n) || depth.has(n)) continue;
+        depth.set(n, depth.get(curr)! + 1);
+        children.set(n, []);
+        children.get(curr)!.push(n);
+        bfs.push(n);
       }
+    }
+
+    // Order children: devices first, then by in-component degree desc, then by
+    // id for stability. This keeps higher-fanout subtrees centered.
+    for (const kids of children.values()) {
+      kids.sort((a, b) => {
+        const da = deviceIds.has(a) ? 0 : 1;
+        const db = deviceIds.has(b) ? 0 : 1;
+        if (da !== db) return da - db;
+        const ga = (adj.get(a)?.size || 0);
+        const gb = (adj.get(b)?.size || 0);
+        if (gb !== ga) return gb - ga;
+        return a.localeCompare(b);
+      });
+    }
+
+    // Post-order: compute subtree "slot width" then assign x.
+    const slotWidth = new Map<string, number>();
+    function computeWidth(id: string): number {
+      const kids = children.get(id) || [];
+      if (!kids.length) {
+        slotWidth.set(id, 1);
+        return 1;
+      }
+      let total = 0;
+      for (const k of kids) total += computeWidth(k);
+      slotWidth.set(id, Math.max(1, total));
+      return slotWidth.get(id)!;
+    }
+    computeWidth(rootId);
+
+    // Assign x: each node gets centered over the span of its children.
+    function assign(id: string, leftSlot: number): void {
+      const kids = children.get(id) || [];
+      if (!kids.length) {
+        positions.set(id, {
+          x: componentOffsetX + (leftSlot + 0.5) * NODE_SLOT - NODE_W / 2,
+          y: (depth.get(id) || 0) * (NODE_H + V_GAP),
+        });
+        return;
+      }
+      let cursor = leftSlot;
+      for (const k of kids) {
+        assign(k, cursor);
+        cursor += slotWidth.get(k)!;
+      }
+      // Center parent over its children's span.
+      const firstKid = positions.get(kids[0])!;
+      const lastKid = positions.get(kids[kids.length - 1])!;
+      positions.set(id, {
+        x: (firstKid.x + lastKid.x) / 2,
+        y: (depth.get(id) || 0) * (NODE_H + V_GAP),
+      });
+    }
+    assign(rootId, 0);
+
+    // Track overall depth and advance the X offset for the next component.
+    let compMaxDepth = 0;
+    for (const id of comp) {
+      const d = depth.get(id);
+      if (d !== undefined) depthById.set(id, d);
+      compMaxDepth = Math.max(compMaxDepth, depth.get(id) || 0);
+    }
+    globalMaxDepth = Math.max(globalMaxDepth, compMaxDepth);
+
+    const widthSlots = slotWidth.get(rootId) || 1;
+    componentOffsetX += widthSlots * NODE_SLOT + COMPONENT_GAP;
+  }
+
+  // Center the whole layout horizontally around x=0 for a tidier fitView.
+  if (positions.size) {
+    const xs = [...positions.values()].map((p) => p.x);
+    const centerShift = (Math.min(...xs) + Math.max(...xs)) / 2;
+    for (const [id, p] of positions) {
+      positions.set(id, { x: p.x - centerShift, y: p.y });
     }
   }
 
-  const maxLevel = levels.size > 0 ? Math.max(...levels.values()) : 0;
-  const allIds = [...devices.map((d) => String(d.id)), ...allExtNodes.map((e) => e.id)];
-  for (const id of allIds) if (!levels.has(id)) levels.set(id, maxLevel + 1);
+  // Optional strict row alignment; otherwise organic tree + overlap separation.
+  if (layout.alignByDepth) {
+    layoutAlignedRows(positions, depthById);
+  } else {
+    resolveOverlaps(positions);
+  }
 
-  // ── Positioning ─────────────────────────────────────────────────────────────
-  const byLevel = new Map<number, string[]>();
-  for (const [id, lvl] of levels) {
-    if (!byLevel.has(lvl)) byLevel.set(lvl, []);
-    byLevel.get(lvl)!.push(id);
-  }
-  const positions = new Map<string, { x: number; y: number }>();
-  for (const [lvl, ids] of byLevel) {
-    const rowW = ids.length * NODE_W + (ids.length - 1) * H_GAP;
-    ids.forEach((id, i) => {
-      positions.set(id, { x: -rowW / 2 + i * (NODE_W + H_GAP), y: lvl * (NODE_H + V_GAP) });
-    });
-  }
+  // The STP root badge should only be shown for true STP roots, not just the
+  // picked tree root of each component.
+  const stpRootId = hasStp
+    ? (() => {
+        const haveRootPort = new Set(
+          links.filter((l) => l.stp_role === 'root').map((l) => String(l.from_device_id))
+        );
+        return devices.map((d) => String(d.id)).find((id) => !haveRootPort.has(id)) ?? '';
+      })()
+    : '';
 
   // ── React Flow nodes ─────────────────────────────────────────────────────────
+  const orphanY = (globalMaxDepth + 1) * (NODE_H + V_GAP);
   const nodes: Node[] = [
     ...devices.map((d) => ({
       id: String(d.id),
       type: 'deviceNode',
       position: positions.get(String(d.id)) || { x: 0, y: 0 },
-      data: { ...d, isRootBridge: String(d.id) === rootId && hasStp } as unknown as Record<string, unknown>,
+      data: { ...d, isRootBridge: hasStp && String(d.id) === stpRootId } as unknown as Record<string, unknown>,
     })),
     ...allExtNodes.map((e) => ({
       id: e.id,
       type: 'externalNode',
-      position: positions.get(e.id) || { x: 0, y: (maxLevel + 1) * (NODE_H + V_GAP) },
+      position: positions.get(e.id) || { x: 0, y: orphanY },
       data: e as unknown as Record<string, unknown>,
     })),
   ];
@@ -391,7 +618,8 @@ function buildGraph(
       source: src,
       target: dst,
       label: (portLabel + stpLabel) || undefined,
-      labelStyle: { fontSize: 9, fill: '#94a3b8' },
+      labelStyle: { fontSize: 10, fill: 'var(--topology-edge-label, #64748b)' },
+      className: 'topology-edge',
       style: { stroke, strokeWidth: 2, strokeDasharray },
       animated,
     });
@@ -407,7 +635,8 @@ function buildGraph(
       source: src,
       target: dst,
       label: port || undefined,
-      labelStyle: { fontSize: 9, fill: '#b45309' },
+      labelStyle: { fontSize: 10, fill: 'var(--topology-seg-edge-label, #b45309)' },
+      className: 'topology-edge topology-edge--segment',
       style: { stroke: '#f59e0b', strokeWidth: 2, strokeDasharray: '5,3' },
       animated: false,
     });
@@ -417,6 +646,9 @@ function buildGraph(
 }
 
 export default function TopologyPage() {
+  const theme = useThemeStore((s) => s.theme);
+  const [alignRows, setAlignRows] = useState(false);
+
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['topology'],
     queryFn: () => topologyApi.get().then((r) => r.data),
@@ -430,16 +662,20 @@ export default function TopologyPage() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  useEffect(() => {
-    if (!data) return;
-    const { nodes: n, edges: e } = buildGraph(
+  const graph = useMemo(() => {
+    if (!data) return { nodes: [] as Node[], edges: [] as Edge[] };
+    return buildGraph(
       (data.devices as TopologyDevice[]) || [],
       (data.externalNodes as ExternalTopologyNode[]) || [],
-      (data.links as TopologyLink[]) || []
+      (data.links as TopologyLink[]) || [],
+      { alignByDepth: alignRows }
     );
-    setNodes(n);
-    setEdges(e);
-  }, [data, setNodes, setEdges]);
+  }, [data, alignRows]);
+
+  useEffect(() => {
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+  }, [graph, setNodes, setEdges]);
 
   const onConnect = useCallback(
     (connection: Connection) => setEdges((eds) => addEdge(connection, eds)),
@@ -459,7 +695,18 @@ export default function TopologyPage() {
     <div className="space-y-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white">Network Topology</h1>
-        <div className="flex gap-2 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-3 flex-shrink-0">
+          <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="rounded border-gray-300 dark:border-slate-600"
+              checked={alignRows}
+              onChange={(e) => setAlignRows(e.target.checked)}
+            />
+            <span title="Place every node at the same tree depth on one horizontal row (strict grid). Off by default: organic tree layout with automatic spacing so labels and nodes do not overlap.">
+              Align by depth (rows)
+            </span>
+          </label>
           <button
             onClick={() => discoverMutation.mutate()}
             disabled={discoverMutation.isPending}
@@ -491,7 +738,7 @@ export default function TopologyPage() {
         </div>
       ) : (
         <>
-          <div className="card" style={{ height: 'min(600px, 60vh)' }}>
+          <div className="card overflow-hidden" style={{ height: 'min(600px, 60vh)' }}>
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -500,13 +747,17 @@ export default function TopologyPage() {
               onConnect={onConnect}
               nodeTypes={nodeTypes}
               fitView
+              fitViewOptions={{ padding: 0.2, includeHiddenNodes: false }}
               minZoom={0.2}
               maxZoom={2}
-              className="dark:bg-slate-800"
+              className={clsx(
+                'topology-reactflow h-full min-h-[400px] bg-slate-50 dark:bg-slate-800',
+                theme === 'dark' && 'dark'
+              )}
             >
-              <Controls className="dark:bg-slate-700 dark:text-white" />
+              <Controls className="topology-controls !shadow-md" />
               <MiniMap
-                className="dark:bg-slate-700"
+                className="!shadow-md"
                 nodeColor={(n) => {
                   if (n.type === 'externalNode') return '#94a3b8';
                   const d = n.data as unknown as TopologyDevice;

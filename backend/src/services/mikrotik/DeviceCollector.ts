@@ -6,6 +6,27 @@ import { decrypt } from '../../utils/crypto';
 import { lookupVendor } from '../../utils/oui';
 import { buildServerArpMap } from '../../utils/serverArp';
 
+/** DB column limits for topology_links (see migrate.ts); reject oversize rows instead of silent truncation. */
+const TOPOLOGY_LINK_LIMITS = {
+  from_interface: 512,
+  to_interface: 512,
+  neighbor_address: 45,
+  neighbor_identity: 255,
+  neighbor_platform: 255,
+  neighbor_mac: 17,
+  neighbor_caps: 255,
+  discovered_by: 512,
+} as const;
+
+function topologyNeighborOversized(
+  field: keyof typeof TOPOLOGY_LINK_LIMITS,
+  value: string | null | undefined
+): { limit: number; len: number } | null {
+  if (value == null || value === '') return null;
+  const limit = TOPOLOGY_LINK_LIMITS[field];
+  return value.length > limit ? { limit, len: value.length } : null;
+}
+
 export interface DeviceRow {
   id: number;
   name: string;
@@ -57,6 +78,7 @@ export class DeviceCollector {
 
   async collectSlow(): Promise<void> {
     await this.collectInterfaces();
+    await this.collectIpAddressesCache();
     await this.collectVlans();
     await this.collectSystemInfo();
     await this.collectStp();
@@ -77,6 +99,7 @@ export class DeviceCollector {
   async collectAll(): Promise<void> {
     await this.collectSystemInfo();
     await this.collectInterfaces();
+    await this.collectIpAddressesCache();
     await this.collectVlans();
     await this.collectInterfaceTraffic();
     await this.collectResourceUsage();
@@ -266,6 +289,29 @@ export class DeviceCollector {
       }
     } catch (err) {
       console.error(`[${this.device.name}] Failed to collect interfaces:`, err);
+    }
+  }
+
+  /** Store /ip/address rows (sanitized) for topology matching of neighbor IPs. */
+  async collectIpAddressesCache(): Promise<void> {
+    try {
+      const rows = await this.client
+        .execute('/ip/address/print', { detail: '' })
+        .catch(() => [] as Record<string, string>[]);
+      const minimalist = rows
+        .filter((r) => r['disabled'] !== 'true' && r['invalid'] !== 'true')
+        .map((r) => ({
+          address: (r['address'] || '').trim(),
+          interface: (r['interface'] || '').trim(),
+          dynamic: r['dynamic'] === 'true',
+        }))
+        .filter((x) => x.address.length > 0);
+      await query(
+        `UPDATE devices SET ip_addresses_jsonb = $1::jsonb, updated_at = NOW() WHERE id = $2`,
+        [JSON.stringify(minimalist), this.device.id]
+      );
+    } catch (err) {
+      console.error(`[${this.device.name}] Failed to cache IP addresses:`, err);
     }
   }
 
@@ -769,10 +815,11 @@ export class DeviceCollector {
         // first entry is always the physical port; the rest are the bridge/bond parents.
         // Store only the physical port so topology edges show the actual cable endpoint.
         const rawInterface = nb['interface'] || '';
-        const fromInterface = rawInterface.split(',')[0].trim() || rawInterface;
+        const fromInterface = (rawInterface.split(',')[0].trim() || rawInterface);
 
         // interface-name is the neighbor's own outgoing interface (format: bridge/port or just port)
-        const toInterface = (nb['interface-name'] || '').trim() || null;
+        const toInterfaceRaw = (nb['interface-name'] || '').trim() || null;
+        const toInterface = toInterfaceRaw || null;
 
         // discovered-by lists protocols that found this neighbor: lldp, cdp, mndp, etc.
         // Rank them by reliability: lldp (point-to-point) > cdp (also flooded in ROS but
@@ -783,6 +830,9 @@ export class DeviceCollector {
         else if (discoveredByRaw.includes('cdp'))  discoveredBy = 'cdp';
         else if (discoveredByRaw.includes('mndp')) discoveredBy = 'mndp';
         else                                        discoveredBy = discoveredByRaw || 'mndp';
+        // Store the full RouterOS list in discovered_by (column is VARCHAR(512)); the raw
+        // string can be a long comma-separated list and used to exceed VARCHAR(50).
+        const discoveredByStored = discoveredByRaw || null;
 
         // RouterOS v7+ may put an IPv6 link-local in 'address'. Try all known
         // IPv4 field names, split on whitespace/commas in case multiple are packed
@@ -800,20 +850,52 @@ export class DeviceCollector {
         const neighborAddress = ipv4FromNeighbor
           || (mac ? macToIpv4[mac] ?? null : null)
           || (mac ? serverArpMap[mac] ?? null : null);
-        const neighborIdentity = nb['identity'] || '';
-        const neighborPlatform = nb['platform'] || '';
-        const neighborMac = nb['mac-address'] || null;
-        const neighborCaps = nb['system-caps-enabled'] || nb['system-caps'] || '';
+        const neighborIdentity = (nb['identity'] || '');
+        const neighborPlatform = (nb['platform'] || '');
+        const neighborMac = nb['mac-address'] ? String(nb['mac-address']) : null;
+        const neighborCaps = (nb['system-caps-enabled'] || nb['system-caps'] || '');
 
         if (!fromInterface) continue;
+
+        const oversize: { field: keyof typeof TOPOLOGY_LINK_LIMITS; limit: number; len: number }[] = [];
+        const check = (field: keyof typeof TOPOLOGY_LINK_LIMITS, val: string | null | undefined) => {
+          const o = topologyNeighborOversized(field, val);
+          if (o) oversize.push({ field, ...o });
+        };
+        check('from_interface', fromInterface);
+        check('to_interface', toInterface);
+        check('neighbor_address', neighborAddress ? String(neighborAddress) : null);
+        check('neighbor_identity', neighborIdentity || null);
+        check('neighbor_platform', neighborPlatform || null);
+        check('neighbor_mac', neighborMac);
+        check('neighbor_caps', neighborCaps || null);
+        check('discovered_by', discoveredByStored);
+
+        if (oversize.length > 0) {
+          console.warn(
+            `[${this.device.name}] Skipping topology neighbor row: value(s) exceed DB column limits ` +
+              `(no silent truncation). Details: ${JSON.stringify(oversize)}`
+          );
+          continue;
+        }
 
         await query(
           `INSERT INTO topology_links
              (from_device_id, from_interface, to_interface, neighbor_address, neighbor_identity,
               neighbor_platform, neighbor_mac, neighbor_caps, link_type, discovered_by, discovered_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
-          [this.device.id, fromInterface, toInterface, neighborAddress, neighborIdentity,
-           neighborPlatform, neighborMac, neighborCaps || null, discoveredBy, discoveredByRaw || null]
+          [
+            this.device.id,
+            fromInterface,
+            toInterface,
+            neighborAddress ? String(neighborAddress) : null,
+            neighborIdentity,
+            neighborPlatform,
+            neighborMac,
+            neighborCaps || null,
+            discoveredBy,
+            discoveredByStored,
+          ]
         );
       }
 

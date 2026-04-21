@@ -1,6 +1,12 @@
 import { useState, FormEvent } from 'react';
-import { X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
-import { devicesApi } from '../../services/api';
+import { useQuery } from '@tanstack/react-query';
+import { X, CheckCircle, AlertCircle, Loader2, KeyRound } from 'lucide-react';
+import {
+  devicesApi,
+  credentialPresetsApi,
+  type DuplicateSerialError,
+} from '../../services/api';
+import ConfirmDuplicateModal from './ConfirmDuplicateModal';
 
 interface Props {
   onClose: () => void;
@@ -21,33 +27,117 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
     device_type: 'router',
     notes: '',
   });
+  const [presetId, setPresetId] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [duplicateSerial, setDuplicateSerial] = useState<DuplicateSerialError | null>(null);
+
+  const { data: presets = [] } = useQuery({
+    queryKey: ['credential-presets'],
+    queryFn: () => credentialPresetsApi.list().then((r) => r.data),
+    staleTime: 30_000,
+  });
+
+  const selectedPreset = presetId != null ? presets.find((p) => p.id === presetId) ?? null : null;
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  const createPayload = (
+    opts: { combineWithDeviceId?: number; forceReplace?: boolean } = {}
+  ) => {
+    const extra = {
+      combine_with_device_id: opts.combineWithDeviceId,
+      force_replace_existing_by_serial: opts.forceReplace,
+    };
+    if (selectedPreset) {
+      return {
+        name: form.name,
+        ip_address: form.ip_address,
+        device_type: form.device_type as import('../../types').DeviceType,
+        notes: form.notes,
+        credential_preset_id: selectedPreset.id,
+        ...extra,
+      };
+    }
+    return {
+      name: form.name,
+      ip_address: form.ip_address,
+      api_port: parseInt(form.api_port, 10),
+      api_username: form.api_username,
+      api_password: form.api_password,
+      ssh_port: parseInt(form.ssh_port, 10),
+      ssh_username: form.ssh_username || undefined,
+      ssh_password: form.ssh_password || undefined,
+      device_type: form.device_type as import('../../types').DeviceType,
+      notes: form.notes,
+      ...extra,
+    };
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!form.name || !form.ip_address || !form.api_username || !form.api_password) {
-      setError('Name, IP address, username, and password are required');
+    if (!form.name || !form.ip_address) {
+      setError('Name and IP address are required');
+      return;
+    }
+    if (!selectedPreset && (!form.api_username || !form.api_password)) {
+      setError('Either pick a credential preset or enter username and password');
       return;
     }
 
     setLoading(true);
     setError('');
+    setDuplicateSerial(null);
     try {
-      await devicesApi.create({
-        ...form,
-        api_port: parseInt(form.api_port),
-        ssh_port: parseInt(form.ssh_port),
-        device_type: form.device_type as import('../../types').DeviceType,
-      });
+      await devicesApi.create(createPayload());
       onSuccess();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      const data = (err as { response?: { data?: unknown } })?.response?.data;
+      if (
+        status === 409 &&
+        data &&
+        typeof data === 'object' &&
+        (data as { code?: string }).code === 'duplicate_serial'
+      ) {
+        setDuplicateSerial(data as DuplicateSerialError);
+        return;
+      }
+      const msg = (data as { error?: string } | undefined)?.error;
       setError(msg || 'Failed to add device');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCombineDuplicate = async () => {
+    if (!duplicateSerial?.existing_device?.id) return;
+    setLoading(true);
+    setError('');
+    try {
+      await devicesApi.create(createPayload({ combineWithDeviceId: duplicateSerial.existing_device.id }));
+      onSuccess();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || 'Failed to combine duplicate by serial');
+    } finally {
+      setLoading(false);
+      setDuplicateSerial(null);
+    }
+  };
+
+  const handleReplaceDuplicate = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      await devicesApi.create(createPayload({ forceReplace: true }));
+      onSuccess();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || 'Failed to replace duplicate serial details');
+    } finally {
+      setLoading(false);
+      setDuplicateSerial(null);
     }
   };
 
@@ -100,82 +190,118 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
             </div>
           </div>
 
-          {/* API credentials */}
+          {/* Credentials: preset or manual */}
           <div>
-            <h3 className="text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-3">
-              RouterOS API Credentials
+            <h3 className="text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+              <KeyRound className="w-3.5 h-3.5" />
+              Credentials
             </h3>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="label">Username *</label>
-                <input
-                  className="input"
-                  value={form.api_username}
-                  onChange={(e) => set('api_username', e.target.value)}
-                  placeholder="admin"
-                />
-              </div>
-              <div>
-                <label className="label">API Port</label>
-                <input
-                  className="input"
-                  type="number"
-                  value={form.api_port}
-                  onChange={(e) => set('api_port', e.target.value)}
-                  placeholder="8728"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="label">Password *</label>
-                <input
-                  className="input"
-                  type="password"
-                  value={form.api_password}
-                  onChange={(e) => set('api_password', e.target.value)}
-                  placeholder="RouterOS API password"
-                  autoComplete="new-password"
-                />
-              </div>
-            </div>
-          </div>
 
-          {/* SSH credentials (optional) */}
-          <details className="group">
-            <summary className="cursor-pointer text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider select-none">
-              SSH Credentials (optional, for backup/restore)
-            </summary>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <div>
-                <label className="label">SSH Username</label>
-                <input
+            {presets.length > 0 && (
+              <div className="mb-3">
+                <label className="label">Use a saved preset</label>
+                <select
                   className="input"
-                  value={form.ssh_username}
-                  onChange={(e) => set('ssh_username', e.target.value)}
-                  placeholder="admin"
-                />
+                  value={presetId ?? ''}
+                  onChange={(e) => setPresetId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                >
+                  <option value="">— Enter credentials manually —</option>
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.api_username}
+                      {p.ssh_username ? ` · SSH ${p.ssh_username}` : ''}
+                      )
+                    </option>
+                  ))}
+                </select>
+                {selectedPreset && (
+                  <p className="text-xs text-gray-500 dark:text-slate-400 mt-2">
+                    Using preset <strong>{selectedPreset.name}</strong>. The server will pull the
+                    API username/password
+                    {selectedPreset.has_ssh_password && selectedPreset.ssh_username
+                      ? ' and SSH credentials'
+                      : ''}
+                    {' '}from this preset.
+                  </p>
+                )}
               </div>
-              <div>
-                <label className="label">SSH Port</label>
-                <input
-                  className="input"
-                  type="number"
-                  value={form.ssh_port}
-                  onChange={(e) => set('ssh_port', e.target.value)}
-                  placeholder="22"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="label">SSH Password</label>
-                <input
-                  className="input"
-                  type="password"
-                  value={form.ssh_password}
-                  onChange={(e) => set('ssh_password', e.target.value)}
-                  autoComplete="new-password"
-                />
-              </div>
-            </div>
-          </details>
+            )}
+
+            {!selectedPreset && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">RouterOS Username *</label>
+                    <input
+                      className="input"
+                      value={form.api_username}
+                      onChange={(e) => set('api_username', e.target.value)}
+                      placeholder="admin"
+                    />
+                  </div>
+                  <div>
+                    <label className="label">API Port</label>
+                    <input
+                      className="input"
+                      type="number"
+                      value={form.api_port}
+                      onChange={(e) => set('api_port', e.target.value)}
+                      placeholder="8728"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label">RouterOS Password *</label>
+                    <input
+                      className="input"
+                      type="password"
+                      value={form.api_password}
+                      onChange={(e) => set('api_password', e.target.value)}
+                      placeholder="RouterOS API password"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </div>
+
+                {/* SSH credentials (optional) */}
+                <details className="group mt-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider select-none">
+                    SSH Credentials (optional, for backup/restore)
+                  </summary>
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="label">SSH Username</label>
+                      <input
+                        className="input"
+                        value={form.ssh_username}
+                        onChange={(e) => set('ssh_username', e.target.value)}
+                        placeholder="admin"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">SSH Port</label>
+                      <input
+                        className="input"
+                        type="number"
+                        value={form.ssh_port}
+                        onChange={(e) => set('ssh_port', e.target.value)}
+                        placeholder="22"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="label">SSH Password</label>
+                      <input
+                        className="input"
+                        type="password"
+                        value={form.ssh_password}
+                        onChange={(e) => set('ssh_password', e.target.value)}
+                        autoComplete="new-password"
+                      />
+                    </div>
+                  </div>
+                </details>
+              </>
+            )}
+          </div>
 
           <div>
             <label className="label">Notes (optional)</label>
@@ -219,6 +345,19 @@ export default function AddDeviceModal({ onClose, onSuccess, prefill }: Props) {
           </div>
         </form>
       </div>
+      {duplicateSerial && (
+        <ConfirmDuplicateModal
+          duplicate={duplicateSerial}
+          pendingName={form.name}
+          pendingIp={form.ip_address}
+          onCancel={() => {
+            setDuplicateSerial(null);
+          }}
+          onCombine={handleCombineDuplicate}
+          onReplace={handleReplaceDuplicate}
+          loading={loading}
+        />
+      )}
     </div>
   );
 }

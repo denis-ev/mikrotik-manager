@@ -59,16 +59,52 @@ export interface DiscoveredDevice {
   platform: string;
   discovered_at: string;
   seen_by: string;
+  // When the neighbor matches a device that's already managed (by interface
+  // MAC, primary IP, or system identity) the backend fills these in so the
+  // UI can hide the row as a duplicate.
+  duplicate_of_device_id: number | null;
+  duplicate_of_device_name: string | null;
+}
+
+export interface DuplicateSerialDeviceInfo {
+  id: number;
+  name: string;
+  ip_address: string;
+  serial_number: string;
+  model?: string;
+  ros_version?: string;
+}
+
+export interface DuplicateSerialError {
+  error: string;
+  code: 'duplicate_serial';
+  existing_device: DuplicateSerialDeviceInfo;
+  candidate: {
+    serial_number: string;
+    identity: string;
+    model?: string;
+    ros_version?: string;
+    ip_address: string;
+  };
 }
 
 export const devicesApi = {
   list: () => api.get<Device[]>('/devices'),
   discovered: () => api.get<DiscoveredDevice[]>('/devices/discovered'),
   get: (id: number) => api.get<Device>(`/devices/${id}`),
-  create: (data: Partial<Device> & { api_password: string }) =>
-    api.post<Device>('/devices', data),
-  update: (id: number, data: Partial<Device> & { api_password?: string }) =>
-    api.put<Device>(`/devices/${id}`, data),
+  create: (
+    data: (Partial<Device> & {
+      api_password?: string;
+      ssh_password?: string;
+      credential_preset_id?: number;
+      force_replace_existing_by_serial?: boolean;
+      combine_with_device_id?: number;
+    })
+  ) => api.post<Device>('/devices', data),
+  update: (
+    id: number,
+    data: Partial<Device> & { api_password?: string; ssh_password?: string; credential_preset_id?: number | null }
+  ) => api.put<Device>(`/devices/${id}`, data),
   delete: (id: number) => api.delete(`/devices/${id}`),
   sync: (id: number) => api.post(`/devices/${id}/sync`, undefined, { timeout: 60_000 }),
   test: (id: number) => api.post<{ success: boolean; identity?: string; error?: string }>(`/devices/${id}/test`),
@@ -150,6 +186,42 @@ export const devicesApi = {
     rack_slot?: string | null;
     notes?: string | null;
   }) => api.patch<Device>(`/devices/${id}/location`, data),
+};
+
+// ─── Credential Presets ──────────────────────────────────────────────────────
+export interface CredentialPreset {
+  id: number;
+  name: string;
+  api_username: string;
+  api_port: number | null;
+  ssh_username: string | null;
+  ssh_port: number | null;
+  notes: string | null;
+  has_api_password: boolean;
+  has_ssh_password: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CredentialPresetInput {
+  name?: string;
+  api_username?: string;
+  api_password?: string;
+  api_port?: number | null;
+  ssh_username?: string | null;
+  ssh_password?: string | null;
+  ssh_port?: number | null;
+  notes?: string | null;
+  clear_ssh_password?: boolean;
+}
+
+export const credentialPresetsApi = {
+  list: () => api.get<CredentialPreset[]>('/credential-presets'),
+  create: (data: CredentialPresetInput) =>
+    api.post<CredentialPreset>('/credential-presets', data),
+  update: (id: number, data: CredentialPresetInput) =>
+    api.put<CredentialPreset>(`/credential-presets/${id}`, data),
+  delete: (id: number) => api.delete(`/credential-presets/${id}`),
 };
 
 // ─── Clients ──────────────────────────────────────────────────────────────────

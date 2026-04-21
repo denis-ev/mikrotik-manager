@@ -21,6 +21,7 @@ services:
   backend:
     image: ghcr.io/2gt-media-group-llc/mikrotik-manager-backend:latest
     environment:
+      TZ: ${TZ:-UTC}
       NODE_ENV: production
       DATABASE_URL: postgresql://mikrotik:${DB_PASSWORD:-mikrotik_secure_pw}@postgres:5432/mikrotik_manager
       REDIS_URL: redis://redis:6379
