@@ -958,7 +958,7 @@ router.post('/:id/check-update', async (req: Request, res: Response) => {
     const statusText = (updateInfo['status'] ?? '').toLowerCase();
     const hasUpdate =
       statusText.includes('available') ||
-      (latestVersion && installedVersion && latestVersion !== installedVersion);
+      Boolean(latestVersion && installedVersion && latestVersion !== installedVersion);
 
     await query(
       `UPDATE devices SET firmware_update_available = $1, latest_ros_version = $2, updated_at = NOW() WHERE id = $3`,

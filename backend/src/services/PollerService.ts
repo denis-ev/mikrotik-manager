@@ -656,9 +656,10 @@ export class PollerService {
         const installedVersion = (updateInfo['installed-version'] ?? '').trim();
         const statusText = (updateInfo['status'] ?? '').toLowerCase();
 
-        const hasUpdate =
+        const hasUpdate = Boolean(
           statusText.includes('available') ||
-          (latestVersion && installedVersion && latestVersion !== installedVersion);
+          (latestVersion && installedVersion && latestVersion !== installedVersion)
+        );
 
         // Read current flag before updating so we can detect first-discovery
         const current = await query<{ firmware_update_available: boolean }>(

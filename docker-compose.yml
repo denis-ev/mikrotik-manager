@@ -23,6 +23,7 @@ services:
       dockerfile: Dockerfile
     environment:
       NODE_ENV: production
+      TZ: ${TZ:-Australia/Perth}
       DATABASE_URL: postgresql://mikrotik:${DB_PASSWORD:-mikrotik_secure_pw}@postgres:5432/mikrotik_manager
       REDIS_URL: redis://redis:6379
       INFLUXDB_URL: http://influxdb:8086
@@ -57,6 +58,7 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
+      TZ: ${TZ:-Australia/Perth}
       POSTGRES_DB: mikrotik_manager
       POSTGRES_USER: mikrotik
       POSTGRES_PASSWORD: ${DB_PASSWORD:-mikrotik_secure_pw}
