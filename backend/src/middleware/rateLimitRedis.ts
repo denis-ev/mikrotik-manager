@@ -9,10 +9,12 @@ export function rateLimitRedis(options: {
   windowSec: number;
   max: number;
   keyPrefix: string;
+  /** When true, applies to all HTTP methods instead of only mutating ones. */
+  allMethods?: boolean;
 }): (req: Request, res: Response, next: NextFunction) => void {
-  const { windowSec, max, keyPrefix } = options;
+  const { windowSec, max, keyPrefix, allMethods = false } = options;
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    if (!allMethods && !['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
       next();
       return;
     }
