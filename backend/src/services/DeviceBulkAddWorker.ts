@@ -161,9 +161,10 @@ export async function startBulkAddWorker(): Promise<void> {
         await processJob(job);
       } catch (err) {
         const { jobId } = job.data;
+        console.error('[BulkAddWorker] job failed:', job?.id, err);
         await writeMeta(jobId, {
           status: 'failed',
-          error: (err as Error).message,
+          error: 'Batch job failed. Check server logs for details.',
           failed_at: new Date().toISOString(),
         });
         throw err;

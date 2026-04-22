@@ -1,4 +1,11 @@
 jest.mock('../../config/database');
+jest.mock('../../config/redis', () => ({
+  redis: {
+    incr: jest.fn().mockResolvedValue(1),
+    expire: jest.fn().mockResolvedValue(1),
+    ttl: jest.fn().mockResolvedValue(60),
+  },
+}));
 jest.mock('../../middleware/auth', () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireAdmin: (
@@ -58,6 +65,7 @@ describe('credentialPresets routes', () => {
         ssh_password_encrypted: null,
         ssh_port: null,
         notes: null,
+        allow_operator_use: true,
         created_at: 't',
         updated_at: 't',
       },
@@ -104,6 +112,7 @@ describe('credentialPresets routes', () => {
         ssh_password_encrypted: null,
         ssh_port: null,
         notes: null,
+        allow_operator_use: true,
         created_at: 't',
         updated_at: 't',
       },

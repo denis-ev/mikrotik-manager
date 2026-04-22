@@ -7,15 +7,17 @@ import { RouterOSClient } from '../services/mikrotik/RouterOSClient';
 import { DeviceCollector, DeviceRow } from '../services/mikrotik/DeviceCollector';
 import { PollerService } from '../services/PollerService';
 import type { CredentialPresetRow } from './credentialPresets';
-import { createDeviceFromBody, type CreateDeviceInput } from '../services/deviceCreation';
+import { createDeviceFromBody, type CreateDeviceInput, type CreateDeviceContext } from '../services/deviceCreation';
 import { parsePort } from '../utils/parsePort';
+import { safeConnectionError } from '../utils/safeClientError';
 import { redis } from '../config/redis';
 import { enqueueBulkAddJob, getBulkAddJobState } from '../services/DeviceBulkAddWorker';
 
 // Resolve a credential preset id into decrypted credentials. Returns null if
 // no id was provided; throws a readable error if the id is invalid.
 async function loadCredentialPreset(
-  id: number | null | undefined
+  id: number | null | undefined,
+  ctx?: CreateDeviceContext
 ): Promise<{
   api_username: string;
   api_password: string;
@@ -30,6 +32,12 @@ async function loadCredentialPreset(
     [id]
   );
   if (!preset) throw new Error(`Credential preset ${id} not found`);
+  const allowOp = preset.allow_operator_use !== false;
+  if (ctx?.requestingUserRole === 'operator' && !allowOp) {
+    const err = new Error('This credential preset is restricted to administrators');
+    (err as Error & { statusCode?: number }).statusCode = 403;
+    throw err;
+  }
   return {
     api_username: preset.api_username,
     api_password: decrypt(preset.api_password_encrypted),
@@ -170,7 +178,9 @@ router.get('/discovered', async (_req: Request, res: Response) => {
 
 // POST /api/devices
 router.post('/', requireWrite, async (req: Request, res: Response) => {
-  const result = await createDeviceFromBody(req.body, pollerService);
+  const result = await createDeviceFromBody(req.body, pollerService, {
+    requestingUserRole: req.user?.role,
+  });
   return res.status(result.status).json(result.body);
 });
 
@@ -186,12 +196,14 @@ router.post('/bulk-add/jobs', requireWrite, async (req: Request, res: Response) 
     return res.status(400).json({ error: 'items array exceeds maximum of 500' });
   }
   const jobId = randomUUID();
+  const ownerUserId = req.user!.userId;
   await redis.set(
     `device-bulk-add:${jobId}:meta`,
     JSON.stringify({
       status: 'queued',
       total: items.length,
       processed: 0,
+      owner_user_id: ownerUserId,
       created_at: new Date().toISOString(),
     }),
     'EX',
@@ -204,15 +216,27 @@ router.post('/bulk-add/jobs', requireWrite, async (req: Request, res: Response) 
 
 // POST /api/devices/bulk-add/jobs/:jobId/cancel — request cooperative cancel
 router.post('/bulk-add/jobs/:jobId/cancel', requireWrite, async (req: Request, res: Response) => {
+  const state = await getBulkAddJobState(req.params.jobId);
+  if (!state.found) {
+    return res.status(404).json({ error: 'Job not found or expired' });
+  }
+  const ownerId = state.meta.owner_user_id;
+  if (typeof ownerId !== 'number' || ownerId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
   await redis.set(`device-bulk-add:${req.params.jobId}:cancel`, '1', 'EX', BULK_ADD_META_TTL_SEC);
   return res.json({ message: 'Cancel requested' });
 });
 
 // GET /api/devices/bulk-add/jobs/:jobId — poll job status and incremental results
-router.get('/bulk-add/jobs/:jobId', async (req: Request, res: Response) => {
+router.get('/bulk-add/jobs/:jobId', requireWrite, async (req: Request, res: Response) => {
   const state = await getBulkAddJobState(req.params.jobId);
   if (!state.found) {
     return res.status(404).json({ error: 'Job not found or expired' });
+  }
+  const ownerId = state.meta.owner_user_id;
+  if (typeof ownerId !== 'number' || ownerId !== req.user!.userId) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
   return res.json({
     job_id: req.params.jobId,
@@ -303,9 +327,12 @@ router.put('/:id', requireWrite, async (req: Request, res: Response) => {
 
   let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
   try {
-    preset = await loadCredentialPreset(credential_preset_id ?? null);
+    preset = await loadCredentialPreset(credential_preset_id ?? null, {
+      requestingUserRole: req.user?.role,
+    });
   } catch (err) {
-    return res.status(400).json({ error: (err as Error).message });
+    const status = (err as Error & { statusCode?: number }).statusCode ?? 400;
+    return res.status(status).json({ error: (err as Error).message });
   }
 
   // When a preset is applied, its values take precedence over anything else
@@ -335,7 +362,7 @@ router.put('/:id', requireWrite, async (req: Request, res: Response) => {
       testClient.disconnect();
     } catch (err) {
       return res.status(422).json({
-        error: `Cannot connect to device with new settings: ${(err as Error).message}`,
+        error: safeConnectionError('PUT /devices/:id', err),
       });
     }
   }

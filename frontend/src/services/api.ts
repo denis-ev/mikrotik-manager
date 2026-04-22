@@ -233,6 +233,8 @@ export interface CredentialPreset {
   ssh_username: string | null;
   ssh_port: number | null;
   notes: string | null;
+  /** When false, only admins may select this preset in Add Device flows. */
+  allow_operator_use: boolean;
   has_api_password: boolean;
   has_ssh_password: boolean;
   created_at: string;
@@ -249,6 +251,7 @@ export interface CredentialPresetInput {
   ssh_port?: number | null;
   notes?: string | null;
   clear_ssh_password?: boolean;
+  allow_operator_use?: boolean;
 }
 
 export const credentialPresetsApi = {

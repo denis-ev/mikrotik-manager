@@ -21,6 +21,7 @@ interface FormState {
   ssh_port: string;
   notes: string;
   clear_ssh_password: boolean;
+  allow_operator_use: boolean;
 }
 
 const EMPTY_FORM: FormState = {
@@ -33,6 +34,7 @@ const EMPTY_FORM: FormState = {
   ssh_port: '22',
   notes: '',
   clear_ssh_password: false,
+  allow_operator_use: true,
 };
 
 function toInput(f: FormState, isEdit: boolean): CredentialPresetInput {
@@ -47,6 +49,7 @@ function toInput(f: FormState, isEdit: boolean): CredentialPresetInput {
   if (f.api_password) input.api_password = f.api_password;
   if (f.ssh_password) input.ssh_password = f.ssh_password;
   else if (isEdit && f.clear_ssh_password) input.clear_ssh_password = true;
+  input.allow_operator_use = f.allow_operator_use;
   return input;
 }
 
@@ -81,6 +84,7 @@ export default function CredentialPresetsSettings({ isAdmin }: { isAdmin: boolea
       ssh_port: p.ssh_port != null ? String(p.ssh_port) : '',
       notes: p.notes ?? '',
       clear_ssh_password: false,
+      allow_operator_use: p.allow_operator_use !== false,
     });
     setError('');
     setModal({ mode: 'edit', id: p.id });
@@ -160,6 +164,11 @@ export default function CredentialPresetsSettings({ isAdmin }: { isAdmin: boolea
                 <th className="table-header px-4 py-2.5 text-left">API</th>
                 <th className="table-header px-4 py-2.5 text-left">SSH</th>
                 <th className="table-header px-4 py-2.5 text-left">Notes</th>
+                {isAdmin && (
+                  <th className="table-header px-4 py-2.5 text-left whitespace-nowrap">
+                    Operator access
+                  </th>
+                )}
                 <th className="table-header px-4 py-2.5 w-24" />
               </tr>
             </thead>
@@ -191,6 +200,11 @@ export default function CredentialPresetsSettings({ isAdmin }: { isAdmin: boolea
                   <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400 max-w-xs truncate">
                     {p.notes || <span className="text-gray-300 dark:text-slate-600">—</span>}
                   </td>
+                  {isAdmin && (
+                    <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400 whitespace-nowrap">
+                      {p.allow_operator_use !== false ? 'All users' : 'Admins only'}
+                    </td>
+                  )}
                   <td className="px-4 py-2.5">
                     {isAdmin && (
                       <div className="flex items-center gap-1">
@@ -351,6 +365,20 @@ export default function CredentialPresetsSettings({ isAdmin }: { isAdmin: boolea
                   placeholder="Optional — e.g. which sites these credentials apply to"
                 />
               </div>
+
+              <label className="flex items-start gap-2 text-sm text-gray-600 dark:text-slate-400 select-none">
+                <input
+                  type="checkbox"
+                  className="rounded mt-0.5"
+                  checked={form.allow_operator_use}
+                  onChange={(e) => set('allow_operator_use', e.target.checked)}
+                />
+                <span>
+                  Allow operator accounts to select this preset when adding or
+                  updating devices. Uncheck for admin-only presets (for example
+                  shared break-glass credentials).
+                </span>
+              </label>
 
               {error && (
                 <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">

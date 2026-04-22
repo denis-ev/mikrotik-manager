@@ -1,12 +1,19 @@
 import { query, queryOne } from '../config/database';
 import { encrypt, decrypt } from '../utils/crypto';
 import { parsePort } from '../utils/parsePort';
+import { safeConnectionError } from '../utils/safeClientError';
 import { RouterOSClient } from './mikrotik/RouterOSClient';
 import type { PollerService } from './PollerService';
 import type { CredentialPresetRow } from '../routes/credentialPresets';
 
+export type CreateDeviceContext = {
+  /** JWT role of the caller ('admin' | 'operator' | 'viewer'). Preset use may be restricted for operators. */
+  requestingUserRole?: string;
+};
+
 async function loadCredentialPreset(
-  id: number | null | undefined
+  id: number | null | undefined,
+  ctx?: CreateDeviceContext
 ): Promise<{
   api_username: string;
   api_password: string;
@@ -21,6 +28,12 @@ async function loadCredentialPreset(
     [id]
   );
   if (!preset) throw new Error(`Credential preset ${id} not found`);
+  const allowOp = (preset as CredentialPresetRow & { allow_operator_use?: boolean }).allow_operator_use !== false;
+  if (ctx?.requestingUserRole === 'operator' && !allowOp) {
+    const err = new Error('This credential preset is restricted to administrators');
+    (err as Error & { statusCode?: number }).statusCode = 403;
+    throw err;
+  }
   return {
     api_username: preset.api_username,
     api_password: decrypt(preset.api_password_encrypted),
@@ -56,7 +69,8 @@ export type CreateDeviceResult =
  */
 export async function createDeviceFromBody(
   input: CreateDeviceInput,
-  pollerService: PollerService | null
+  pollerService: PollerService | null,
+  ctx?: CreateDeviceContext
 ): Promise<CreateDeviceResult> {
   const {
     name,
@@ -68,9 +82,10 @@ export async function createDeviceFromBody(
 
   let preset: Awaited<ReturnType<typeof loadCredentialPreset>> = null;
   try {
-    preset = await loadCredentialPreset(credential_preset_id ?? null);
+    preset = await loadCredentialPreset(credential_preset_id ?? null, ctx);
   } catch (err) {
-    return { ok: false, status: 400, body: { error: (err as Error).message } };
+    const status = (err as Error & { statusCode?: number }).statusCode ?? 400;
+    return { ok: false, status, body: { error: (err as Error).message } };
   }
 
   const api_username: string | undefined = preset?.api_username ?? input.api_username;
@@ -101,7 +116,7 @@ export async function createDeviceFromBody(
     return {
       ok: false,
       status: 422,
-      body: { error: `Cannot connect to device: ${(err as Error).message}` },
+      body: { error: safeConnectionError('createDeviceFromBody', err) },
     };
   } finally {
     testClient.disconnect();

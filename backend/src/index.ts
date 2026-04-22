@@ -25,6 +25,7 @@ import {
 } from './services/DeviceBulkAddWorker';
 import { verifyToken } from './middleware/auth';
 import { decrypt } from './utils/crypto';
+import { corsMiddlewareOptions, socketIoCorsOptions } from './utils/corsOrigins';
 
 import authRoutes from './routes/auth';
 import devicesRoutes, { setPollerService as setDevicesPoller } from './routes/devices';
@@ -49,7 +50,7 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 const io = new SocketServer(httpServer, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
+  cors: socketIoCorsOptions(),
   path: '/socket.io',
 });
 
@@ -173,7 +174,7 @@ terminalNs.on('connection', (socket) => {
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: '*', credentials: true }));
+app.use(cors(corsMiddlewareOptions()));
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
