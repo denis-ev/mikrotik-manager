@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.10.2_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.10.4_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -107,6 +107,7 @@ A self-hosted, full-stack network management platform for MikroTik devices. Moni
 - Firmware update availability detection
 - Per-device notes, rack location, and physical address with map support
 - Device credential encryption at rest
+- **Bulk device add** — "Try All" discovered devices runs as a server-side background job (survives browser tab close) with live progress and cancel support
 
 ### Routers
 - Routing table viewer
@@ -170,6 +171,7 @@ Instant search across devices, clients, and events from the top navigation bar.
 - Role-based access: **Admin**, **Operator** (read/write), **Viewer** (read-only)
 - Admin-only user creation and role assignment
 - JWT authentication with secure session handling
+- **Credential preset access control** — presets can be restricted to admins only (`allow_operator_use`); operators only see presets they are permitted to use when adding or updating devices
 
 ### TLS / HTTPS
 - Automatic self-signed certificate generation on first run
@@ -229,6 +231,7 @@ Edit `.env` and set at minimum:
 ```env
 JWT_SECRET=your_long_random_jwt_secret_here
 ENCRYPTION_KEY=your_32_character_encryption_key_
+CORS_ORIGIN=https://your-domain.example.com
 ```
 
 ### 3. Start the application
@@ -272,6 +275,9 @@ At minimum, change these values in `.env`:
 # Required — use long, random strings
 JWT_SECRET=your_long_random_jwt_secret_here
 ENCRYPTION_KEY=your_32_character_encryption_key_
+
+# Required for production deployments (set to your domain)
+# CORS_ORIGIN=https://manager.example.com
 
 # Optional — defaults work for a local install
 DB_PASSWORD=mikrotik_secure_pw
@@ -336,6 +342,7 @@ All configuration is done via environment variables in `.env`:
 |---|---|---|
 | `JWT_SECRET` | `changeme_use_a_long_random_secret_at_least_32_chars` | Secret for signing JWT tokens. **Change this.** |
 | `ENCRYPTION_KEY` | `changeme32byteslongencryptionkey` | 32-character key for encrypting device passwords at rest. **Change this.** |
+| `CORS_ORIGIN` | *(localhost defaults set by Docker Compose)* | Comma-separated list of browser origins allowed to call the API (e.g. `https://manager.example.com`). **Required in production** — set this to your domain. |
 | `DB_PASSWORD` | `mikrotik_secure_pw` | PostgreSQL password |
 | `INFLUXDB_TOKEN` | `mytoken123456789` | InfluxDB admin token |
 | `INFLUXDB_ORG` | `mikrotik-manager` | InfluxDB organization name |
