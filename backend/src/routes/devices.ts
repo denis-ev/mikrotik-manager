@@ -61,6 +61,7 @@ router.get('/', async (_req: Request, res: Response) => {
   const devices = await query(
     `SELECT id, name, ip_address, api_port, api_username, model, serial_number,
             firmware_version, ros_version, latest_ros_version, firmware_update_available,
+            routerboard_upgrade_available, upgrade_firmware_version,
             device_type, status, last_seen, notes,
             location_address, location_lat::float8 AS location_lat, location_lng::float8 AS location_lng,
             rack_name, rack_slot, created_at
@@ -139,18 +140,41 @@ router.get('/discovered', async (_req: Request, res: Response) => {
   const nameToDevice = new Map<string, { id: number; name: string }>();
   for (const r of managedByName) nameToDevice.set(r.name.toLowerCase(), { id: r.id, name: r.name });
 
-  // Deduplicate by MAC (most reliable), fallback to IP, then identity
+  // Deduplicate across all three identifiers so that a neighbor seen by multiple managed
+  // devices — some via LLDP (has MAC), others via MNDP (no MAC) — merges into one entry.
+  // Three indexes cross-reference mac/ip/identity to the canonical dedup key.
   const seen = new Map<string, typeof rows[0] & { seen_by_list: string[] }>();
+  const macIdx = new Map<string, string>();      // normalised-mac  → canonical key
+  const ipIdx  = new Map<string, string>();      // ip              → canonical key
+  const nameIdx = new Map<string, string>();     // lower-identity  → canonical key
+
   for (const row of rows) {
-    const key = row.neighbor_mac || row.neighbor_address || row.neighbor_identity || '';
-    if (!key) continue;
-    if (seen.has(key)) {
-      const existing = seen.get(key)!;
-      if (!existing.seen_by_list.includes(row.seen_by)) {
+    const mac      = (row.neighbor_mac  || '').toLowerCase();
+    const ip       = row.neighbor_address || '';
+    const identity = (row.neighbor_identity || '').toLowerCase();
+
+    // Find whether any identifier matches something already in the map
+    const existingKey =
+      (mac      && macIdx.get(mac))   ||
+      (ip       && ipIdx.get(ip))     ||
+      (identity && nameIdx.get(identity));
+
+    if (existingKey) {
+      const existing = seen.get(existingKey)!;
+      if (row.seen_by && !existing.seen_by_list.includes(row.seen_by)) {
         existing.seen_by_list.push(row.seen_by);
       }
+      // Register any newly-learned identifiers against the same key
+      if (mac      && !macIdx.has(mac))       macIdx.set(mac,      existingKey);
+      if (ip       && !ipIdx.has(ip))          ipIdx.set(ip,        existingKey);
+      if (identity && !nameIdx.has(identity)) nameIdx.set(identity, existingKey);
     } else {
-      seen.set(key, { ...row, seen_by_list: [row.seen_by] });
+      const key = mac || ip || identity;
+      if (!key) continue;
+      seen.set(key, { ...row, seen_by_list: row.seen_by ? [row.seen_by] : [] });
+      if (mac)      macIdx.set(mac,      key);
+      if (ip)       ipIdx.set(ip,        key);
+      if (identity) nameIdx.set(identity, key);
     }
   }
 
@@ -249,7 +273,9 @@ router.get('/bulk-add/jobs/:jobId', requireWrite, async (req: Request, res: Resp
 router.get('/:id', async (req: Request, res: Response) => {
   const device = await queryOne(
     `SELECT id, name, ip_address, api_port, api_username, ssh_port, ssh_username, model,
-            serial_number, firmware_version, ros_version, device_type, status, last_seen,
+            serial_number, firmware_version, ros_version, latest_ros_version,
+            firmware_update_available, routerboard_upgrade_available, upgrade_firmware_version,
+            device_type, status, last_seen,
             notes, location_address,
             location_lat::float8 AS location_lat,
             location_lng::float8 AS location_lng,
@@ -918,6 +944,50 @@ router.post('/:id/install-update', requireWrite, async (req: Request, res: Respo
       [deviceRow.id]
     );
     return res.json({ message: 'Update installation initiated. Device will reboot.' });
+  } finally {
+    collector.disconnect();
+  }
+});
+
+// POST /api/devices/:id/check-routerboard
+router.post('/:id/check-routerboard', async (req: Request, res: Response) => {
+  const deviceRow = await queryOne<any>(
+    `SELECT id, ip_address, api_port, api_username, api_password_encrypted FROM devices WHERE id = $1`,
+    [req.params.id]
+  );
+  if (!deviceRow) return res.status(404).json({ error: 'Device not found' });
+
+  const collector = new DeviceCollector(deviceRow);
+  try {
+    await collector.connect();
+    const info = await collector.checkRouterboardUpgrade();
+    await query(
+      `UPDATE devices SET routerboard_upgrade_available = $1, upgrade_firmware_version = $2, updated_at = NOW() WHERE id = $3`,
+      [info.upgradeAvailable, info.upgradeFirmware || null, deviceRow.id]
+    );
+    return res.json(info);
+  } finally {
+    collector.disconnect();
+  }
+});
+
+// POST /api/devices/:id/install-routerboard
+router.post('/:id/install-routerboard', requireWrite, async (req: Request, res: Response) => {
+  const deviceRow = await queryOne<any>(
+    `SELECT id, ip_address, api_port, api_username, api_password_encrypted FROM devices WHERE id = $1`,
+    [req.params.id]
+  );
+  if (!deviceRow) return res.status(404).json({ error: 'Device not found' });
+
+  const collector = new DeviceCollector(deviceRow);
+  try {
+    await collector.connect();
+    await collector.installRouterboardUpgrade();
+    await query(
+      `UPDATE devices SET routerboard_upgrade_available = FALSE, updated_at = NOW() WHERE id = $1`,
+      [deviceRow.id]
+    );
+    return res.json({ message: 'RouterBOOT upgrade initiated. Device will reboot.' });
   } finally {
     collector.disconnect();
   }

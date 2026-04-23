@@ -2152,6 +2152,20 @@ export class DeviceCollector {
     await this.client.execute('/system/package/update/install');
   }
 
+  async checkRouterboardUpgrade(): Promise<{ currentFirmware: string; upgradeFirmware: string; upgradeAvailable: boolean }> {
+    const result = await this.client.execute('/system/routerboard/print').catch(() => [] as Record<string, string>[]);
+    const rb = (result[0] as Record<string, string>) || {};
+    const currentFirmware = (rb['current-firmware'] || '').trim();
+    const upgradeFirmware = (rb['upgrade-firmware'] || '').trim();
+    const upgradeAvailable = Boolean(upgradeFirmware && currentFirmware && upgradeFirmware !== currentFirmware);
+    return { currentFirmware, upgradeFirmware, upgradeAvailable };
+  }
+
+  async installRouterboardUpgrade(): Promise<void> {
+    await this.client.execute('/system/routerboard/upgrade');
+    await this.client.execute('/system/reboot');
+  }
+
   async reboot(): Promise<void> {
     await this.client.execute('/system/reboot');
   }

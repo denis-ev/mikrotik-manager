@@ -311,7 +311,7 @@ export default function DeviceDetailPage() {
       )}
       {activeTab === 'routing' && <RoutingTab deviceId={deviceId} />}
       {activeTab === 'firewall' && <FirewallTab deviceId={deviceId} deviceType={device?.device_type} />}
-      {activeTab === 'config' && <SystemConfigTab deviceId={deviceId} />}
+      {activeTab === 'config' && <SystemConfigTab deviceId={deviceId} device={device} />}
       {activeTab === 'hardware' && <HardwareTab deviceId={deviceId} />}
       {activeTab === 'radios' && <RadiosTab deviceId={deviceId} deviceStatus={device.status} />}
       {activeTab === 'tools' && <ToolsTab deviceId={deviceId} />}

@@ -11,6 +11,7 @@ import {
   Search,
   Radar,
   ArrowUpCircle,
+  Cpu,
   Pencil,
   ArrowUpDown,
   ArrowUp,
@@ -362,10 +363,18 @@ export default function DevicesPage() {
                       {device.ros_version || '—'}
                       {device.firmware_update_available && (
                         <span
-                          title={device.latest_ros_version ? `Update available: ${device.latest_ros_version}` : 'Firmware update available'}
+                          title={device.latest_ros_version ? `RouterOS update available: ${device.latest_ros_version}` : 'RouterOS update available'}
                           className="flex-shrink-0"
                         >
                           <ArrowUpCircle className="w-3.5 h-3.5 text-amber-500" />
+                        </span>
+                      )}
+                      {device.routerboard_upgrade_available && (
+                        <span
+                          title={device.upgrade_firmware_version ? `RouterBOOT upgrade available: ${device.upgrade_firmware_version}` : 'RouterBOOT upgrade available'}
+                          className="flex-shrink-0"
+                        >
+                          <Cpu className="w-3.5 h-3.5 text-blue-400" />
                         </span>
                       )}
                     </span>

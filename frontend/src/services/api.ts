@@ -179,6 +179,9 @@ export const devicesApi = {
     api.delete(`/devices/${id}/ip-addresses/${encodeURIComponent(addrId)}`),
   checkUpdate: (id: number) =>
     api.post<Record<string, string>>(`/devices/${id}/check-update`),
+  checkRouterboard: (id: number) =>
+    api.post<{ currentFirmware: string; upgradeFirmware: string; upgradeAvailable: boolean }>(`/devices/${id}/check-routerboard`),
+  installRouterboard: (id: number) => api.post(`/devices/${id}/install-routerboard`),
   getHardware: (id: number) =>
     api.get<{ health: Record<string, string>[]; disks: Record<string, string>[] }>(`/devices/${id}/hardware`),
   installUpdate: (id: number) => api.post(`/devices/${id}/install-update`),

@@ -56,6 +56,8 @@ export interface Device {
   ros_version?: string;
   latest_ros_version?: string;
   firmware_update_available?: boolean;
+  routerboard_upgrade_available?: boolean;
+  upgrade_firmware_version?: string;
   device_type: DeviceType;
   status: DeviceStatus;
   last_seen?: string;

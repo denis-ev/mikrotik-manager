@@ -5,7 +5,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
-import { Router, Users, AlertTriangle, Wifi, Activity, TrendingUp, MapPin, ArrowUpCircle, X, Signal } from 'lucide-react';
+import { Router, Users, AlertTriangle, Wifi, Activity, TrendingUp, MapPin, ArrowUpCircle, Cpu, X, Signal } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { metricsApi, eventsApi, devicesApi, clientsApi } from '../services/api';
@@ -274,9 +274,13 @@ export default function DashboardPage() {
   });
 
   const [dismissedFirmwareIds, setDismissedFirmwareIds] = useState<number[]>([]);
-  const devicesWithUpdates = devices.filter(
+  const devicesWithRosUpdates = devices.filter(
     (d) => d.firmware_update_available && !dismissedFirmwareIds.includes(d.id)
   );
+  const devicesWithRbUpgrades = devices.filter(
+    (d) => d.routerboard_upgrade_available && !dismissedFirmwareIds.includes(d.id)
+  );
+  const showUpdateBanner = devicesWithRosUpdates.length > 0 || devicesWithRbUpgrades.length > 0;
 
   // Device type distribution for pie chart
   const deviceTypeLabel: Record<string, string> = {
@@ -300,30 +304,63 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
 
-      {/* Firmware update banner */}
-      {devicesWithUpdates.length > 0 && (
+      {/* Updates available banner */}
+      {showUpdateBanner && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-700/50 dark:bg-amber-900/20 px-4 py-3 flex items-start gap-3">
           <ArrowUpCircle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-          <div className="flex-1 text-sm text-amber-800 dark:text-amber-300">
-            <span className="font-semibold">Firmware update{devicesWithUpdates.length > 1 ? 's' : ''} available</span>
-            {' — '}
-            {devicesWithUpdates.map((d, i) => (
-              <span key={d.id}>
-                {i > 0 && ', '}
-                <button
-                  onClick={() => navigate(`/devices/${d.id}`)}
-                  className="underline underline-offset-2 hover:text-amber-900 dark:hover:text-amber-200 font-medium"
-                >
-                  {d.name}
-                  {d.latest_ros_version && (
-                    <span className="font-normal"> ({d.latest_ros_version})</span>
-                  )}
-                </button>
-              </span>
-            ))}
+          <div className="flex-1 text-sm text-amber-800 dark:text-amber-300 space-y-1">
+            <span className="font-semibold">Updates available</span>
+            {devicesWithRosUpdates.length > 0 && (
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="font-medium flex items-center gap-1">
+                  <ArrowUpCircle className="w-3 h-3" />
+                  RouterOS ({devicesWithRosUpdates.length}):
+                </span>
+                {devicesWithRosUpdates.map((d, i) => (
+                  <span key={d.id}>
+                    {i > 0 && <span className="text-amber-600 dark:text-amber-500"> · </span>}
+                    <button
+                      onClick={() => navigate(`/devices/${d.id}?tab=config`)}
+                      className="underline underline-offset-2 hover:text-amber-900 dark:hover:text-amber-200"
+                    >
+                      {d.name}
+                      {d.latest_ros_version && (
+                        <span className="font-normal opacity-80"> ({d.latest_ros_version})</span>
+                      )}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {devicesWithRbUpgrades.length > 0 && (
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="font-medium flex items-center gap-1">
+                  <Cpu className="w-3 h-3" />
+                  RouterBOOT ({devicesWithRbUpgrades.length}):
+                </span>
+                {devicesWithRbUpgrades.map((d, i) => (
+                  <span key={d.id}>
+                    {i > 0 && <span className="text-amber-600 dark:text-amber-500"> · </span>}
+                    <button
+                      onClick={() => navigate(`/devices/${d.id}?tab=config`)}
+                      className="underline underline-offset-2 hover:text-amber-900 dark:hover:text-amber-200"
+                    >
+                      {d.name}
+                      {d.upgrade_firmware_version && (
+                        <span className="font-normal opacity-80"> ({d.upgrade_firmware_version})</span>
+                      )}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <button
-            onClick={() => setDismissedFirmwareIds((ids) => [...ids, ...devicesWithUpdates.map((d) => d.id)])}
+            onClick={() => setDismissedFirmwareIds((ids) => [
+              ...ids,
+              ...devicesWithRosUpdates.map((d) => d.id),
+              ...devicesWithRbUpgrades.map((d) => d.id),
+            ])}
             className="p-0.5 rounded hover:bg-amber-200 dark:hover:bg-amber-800/50 text-amber-500 flex-shrink-0"
             title="Dismiss"
           >

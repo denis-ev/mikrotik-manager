@@ -165,6 +165,18 @@ export class PollerService {
         }
       }
 
+      // Stale topology-link cleanup — runs every 15 minutes.
+      // Removes neighbor rows whose reporting device missed enough slow polls
+      // (slow poll = 5 min; 20-min window = 4 missed polls) without being
+      // explicitly marked offline, e.g. after a crash.
+      const staleLinksKey = 'task:stale_topology_links';
+      const lastStaleLinks = await this.getTimestamp(staleLinksKey);
+      if (now - lastStaleLinks > 900_000) {
+        await this.setTimestamp(staleLinksKey, now);
+        query(`DELETE FROM topology_links WHERE discovered_at < NOW() - INTERVAL '20 minutes'`)
+          .catch((e) => console.error('[Poller] Stale topology-link cleanup error:', e));
+      }
+
       // Firmware update check — runs once per day
       const firmwareKey = 'task:firmware_check';
       const lastFirmware = await this.getTimestamp(firmwareKey);
@@ -611,6 +623,8 @@ export class PollerService {
     }
     // Mark all clients for this device inactive — updateClients() never ran because connect() failed.
     await query(`UPDATE clients SET active = FALSE WHERE device_id = $1`, [deviceId]);
+    // Clear stale neighbor links — the device can't re-sync to clean them up itself.
+    await query(`DELETE FROM topology_links WHERE from_device_id = $1`, [deviceId]);
     // Write updated global deduped count and a per-device zero so history is continuous.
     if (device) {
       const writeApi = getWriteApi();
@@ -693,6 +707,34 @@ export class PollerService {
           }
         } else if (wasAvailable) {
           // Update was installed — clear the flag and notify the UI
+          this.io?.emit('device:updated', { deviceId: device.id });
+        }
+
+        // RouterBOOT check — reuse the existing connection
+        const rbInfo = await collector.checkRouterboardUpgrade().catch(() => ({ upgradeAvailable: false, upgradeFirmware: '', currentFirmware: '' }));
+        const rbCurrentRows = await query<{ routerboard_upgrade_available: boolean }>(
+          `SELECT routerboard_upgrade_available FROM devices WHERE id = $1`,
+          [device.id]
+        );
+        const rbWasAvailable = rbCurrentRows[0]?.routerboard_upgrade_available ?? false;
+        await query(
+          `UPDATE devices SET routerboard_upgrade_available = $1, upgrade_firmware_version = $2, updated_at = NOW() WHERE id = $3`,
+          [rbInfo.upgradeAvailable, rbInfo.upgradeFirmware || null, device.id]
+        );
+        if (rbInfo.upgradeAvailable) {
+          this.io?.emit('device:updated', { deviceId: device.id });
+          if (!rbWasAvailable) {
+            const rbMsg = rbInfo.upgradeFirmware
+              ? `${device.name} has a RouterBOOT upgrade available: ${rbInfo.upgradeFirmware}`
+              : `${device.name} has a RouterBOOT upgrade available`;
+            alertService.dispatch('firmware_update_available', rbMsg, {
+              deviceId: device.id,
+              deviceName: device.name,
+              details: rbInfo.upgradeFirmware ? `Current: ${rbInfo.currentFirmware}  →  Upgrade: ${rbInfo.upgradeFirmware}` : undefined,
+            }).catch(() => {});
+            console.log(`[Poller] RouterBOOT upgrade detected for ${device.name}: ${rbInfo.currentFirmware} → ${rbInfo.upgradeFirmware}`);
+          }
+        } else if (rbWasAvailable) {
           this.io?.emit('device:updated', { deviceId: device.id });
         }
       } catch (err) {
