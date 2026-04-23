@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Search, Wifi, Network, Users, X, Pencil, Trash2, ChevronUp, ChevronDown, ChevronsUpDown, RefreshCw } from 'lucide-react';
@@ -131,7 +131,7 @@ export default function ClientsPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [refreshInterval, setRefreshInterval] = useState<number | null>(readStoredInterval);
   const refreshIntervalRef = useRef(refreshInterval);
-  refreshIntervalRef.current = refreshInterval;
+  useEffect(() => { refreshIntervalRef.current = refreshInterval; }, [refreshInterval]);
   const PAGE_SIZE = 50;
 
   const handleIntervalChange = (val: number | null) => {
