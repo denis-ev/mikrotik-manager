@@ -1020,7 +1020,7 @@ export default function NetworkServicesSyslogPage() {
                 </h3>
                 <p className="mt-1 text-sm text-gray-600 dark:text-slate-300">
                   {pendingPush.operation === 'update' ? 'This will update' : 'This will add'} the {pendingPush.type === 'action' ? 'logging action' : 'logging rule'}{' '}
-                  <strong>"{pendingPush.type === 'action' ? pendingPush.data['name'] : pendingPush.data['topics']}"</strong>{' '}
+                  <strong>&quot;{pendingPush.type === 'action' ? pendingPush.data['name'] : pendingPush.data['topics']}&quot;</strong>{' '}
                   {pendingPush.operation === 'update' ? 'on' : 'to'}{' '}
                   <strong>
                     {pendingPush.operation === 'update' && pendingPush.coverage
