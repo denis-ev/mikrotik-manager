@@ -43,6 +43,7 @@ import searchRoutes from './routes/search';
 import switchesRoutes from './routes/switches';
 import routersRoutes from './routes/routers';
 import alertsRoutes from './routes/alerts';
+import configTemplatesRoutes from './routes/configTemplates';
 import wirelessRoutes from './routes/wireless';
 import networkServicesRoutes from './routes/networkServices';
 import credentialPresetsRoutes from './routes/credentialPresets';
@@ -215,6 +216,7 @@ app.use('/api/credential-presets', credentialPresetsRoutes);
 app.use('/api/audit-log', auditLogRoutes);
 app.use('/api/tags', tagsRoutes);
 app.use('/api/maintenance-windows', maintenanceWindowsRoutes);
+app.use('/api/config-templates', configTemplatesRoutes);
 
 // ─── Error Handler ────────────────────────────────────────────────────────────
 app.use(errorHandler);

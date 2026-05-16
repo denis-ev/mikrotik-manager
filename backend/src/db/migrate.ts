@@ -347,6 +347,21 @@ CREATE TABLE IF NOT EXISTS device_availability (
 );
 CREATE INDEX IF NOT EXISTS idx_device_availability_device ON device_availability(device_id, went_offline_at DESC);
 
+-- Configuration templates (reusable config sets pushed to devices or groups)
+CREATE TABLE IF NOT EXISTS config_templates (
+  id               SERIAL PRIMARY KEY,
+  name             VARCHAR(100) NOT NULL UNIQUE,
+  description      TEXT,
+  applies_to_type  VARCHAR(20),
+  template_json    JSONB NOT NULL DEFAULT '{}',
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- TOTP two-factor authentication
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false;
+
 -- Wireless security profiles (WPA/WPA2/WPA3 config)
 CREATE TABLE IF NOT EXISTS wireless_security_profiles (
   id                    SERIAL PRIMARY KEY,

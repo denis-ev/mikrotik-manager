@@ -43,10 +43,20 @@ api.interceptors.response.use(
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export const authApi = {
   login: (username: string, password: string) =>
-    api.post<{ token: string; user: import('../types').User }>(
+    api.post<{ token?: string; user?: import('../types').User; requires_totp?: boolean; totp_token?: string }>(
       '/auth/login',
       { username, password }
     ),
+  totpVerify: (totp_token: string, code: string) =>
+    api.post<{ token: string; user: import('../types').User }>('/auth/totp/verify', { totp_token, code }),
+  totpSetup: () =>
+    api.post<{ secret: string; uri: string; qr: string }>('/auth/totp/setup'),
+  totpConfirm: (code: string) =>
+    api.post<{ ok: boolean }>('/auth/totp/confirm', { code }),
+  totpDisable: (password: string) =>
+    api.post<{ ok: boolean }>('/auth/totp/disable', { password }),
+  totpStatus: () =>
+    api.get<{ totp_enabled: boolean }>('/auth/totp/status'),
   me: () => api.get('/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
     api.put('/auth/password', { currentPassword, newPassword }),
@@ -774,6 +784,33 @@ export const auditLogApi = {
       }[];
       total: number; page: number; limit: number;
     }>('/audit-log', { params }),
+};
+
+export interface ConfigTemplate {
+  id: number;
+  name: string;
+  description: string | null;
+  applies_to_type: string | null;
+  template_json: {
+    dns_servers?: string[];
+    ntp_servers?: string[];
+    syslog_host?: string;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export const configTemplatesApi = {
+  list: () => api.get<ConfigTemplate[]>('/config-templates'),
+  get: (id: number) => api.get<ConfigTemplate>(`/config-templates/${id}`),
+  create: (data: Partial<ConfigTemplate>) => api.post<ConfigTemplate>('/config-templates', data),
+  update: (id: number, data: Partial<ConfigTemplate>) => api.put<ConfigTemplate>(`/config-templates/${id}`, data),
+  delete: (id: number) => api.delete(`/config-templates/${id}`),
+  apply: (id: number, device_ids: number[]) =>
+    api.post<{ results: { device_id: number; device_name: string; ok: boolean; error?: string }[] }>(
+      `/config-templates/${id}/apply`,
+      { device_ids }
+    ),
 };
 
 export default api;
