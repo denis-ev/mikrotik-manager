@@ -1788,29 +1788,39 @@ router.post('/:id/tools/capture', requireWrite, async (req: Request, res: Respon
   }
 
   const fileName = `cap-${Date.now()}`;
-  // RouterOS SFTP root = device file system root; sniffer writes <file-name>.pcap there
-  const remotePath = `/${fileName}.pcap`;
   const client = makeToolClient(device);
 
   try {
     console.log(`[capture] connecting to device ${device.id} (${device.ip_address})`);
     await client.connect();
-    console.log(`[capture] connected; configuring sniffer`);
-    // Stop any previous capture before reconfiguring
+    // Stop any in-progress capture before reconfiguring
     await client.execute('/tool/sniffer/stop').catch(() => {});
     const setParams: Record<string, string> = { 'file-name': fileName, 'file-limit': '10240' };
     if (iface) setParams['filter-interface'] = iface;
     if (filter_ip) setParams['filter-ip-address'] = filter_ip;
     await client.execute('/tool/sniffer/set', setParams);
-    console.log(`[capture] sniffer configured; starting ${captureSec}s capture`);
+    console.log(`[capture] starting ${captureSec}s capture`);
     await client.execute('/tool/sniffer/start');
     await new Promise((r) => setTimeout(r, captureSec * 1000));
     await client.execute('/tool/sniffer/stop').catch(() => {});
+
+    // Poll /file/print until the capture file appears (up to 10s)
+    // RouterOS reports the exact SFTP-accessible path in the 'name' field
+    let remotePath: string | null = null;
+    for (let i = 0; i < 20 && !remotePath; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const files = await client.execute('/file/print');
+      const hit = files.find((f) => (f['name'] ?? '').includes(fileName));
+      if (hit) remotePath = hit['name'];
+    }
     client.disconnect();
-    console.log(`[capture] sniffer stopped; waiting for file flush`);
-    // Allow RouterOS a moment to flush the PCAP file before SFTP download
-    await new Promise((r) => setTimeout(r, 2000));
-    console.log(`[capture] opening SFTP to ${device.ip_address}:${device.ssh_port ?? 22} path=${remotePath}`);
+
+    if (!remotePath) {
+      throw new Error(`Sniffer did not create file "${fileName}.pcap" — check device storage`);
+    }
+    // RouterOS SFTP root is the device filesystem root; 'name' from /file/print is the path
+    const sftpPath = remotePath.startsWith('/') ? remotePath : `/${remotePath}`;
+    console.log(`[capture] file found: ${remotePath}; downloading via SFTP`);
 
     // Download PCAP via SFTP then delete remote file
     const pcapBuffer = await new Promise<Buffer>((resolve, reject) => {
@@ -1819,16 +1829,26 @@ router.post('/:id/tools/capture', requireWrite, async (req: Request, res: Respon
         ssh.sftp((err, sftp) => {
           if (err) { ssh.end(); return reject(new Error(`SFTP init failed: ${err.message}`)); }
           const chunks: Buffer[] = [];
-          const stream = sftp.createReadStream(remotePath);
+          const stream = sftp.createReadStream(sftpPath);
           stream.on('data', (chunk: Buffer) => chunks.push(chunk));
           stream.on('end', () => {
-            // Best-effort delete; don't block the response on it
-            sftp.unlink(remotePath, () => { ssh.end(); });
+            sftp.unlink(sftpPath, () => { ssh.end(); });
             resolve(Buffer.concat(chunks));
           });
           stream.on('error', (e: Error) => {
-            ssh.end();
-            reject(new Error(`SFTP read failed (path=${remotePath}): ${e.message}`));
+            // Try without leading slash in case RouterOS SFTP is rooted differently
+            if (sftpPath.startsWith('/') && e.message.includes('No such file')) {
+              const altPath = sftpPath.slice(1);
+              console.log(`[capture] retrying SFTP with path: ${altPath}`);
+              const chunks2: Buffer[] = [];
+              const stream2 = sftp.createReadStream(altPath);
+              stream2.on('data', (c: Buffer) => chunks2.push(c));
+              stream2.on('end', () => { sftp.unlink(altPath, () => { ssh.end(); }); resolve(Buffer.concat(chunks2)); });
+              stream2.on('error', (e2: Error) => { ssh.end(); reject(new Error(`SFTP read failed (tried ${sftpPath} and ${altPath}): ${e2.message}`)); });
+            } else {
+              ssh.end();
+              reject(new Error(`SFTP read failed (path=${sftpPath}): ${e.message}`));
+            }
           });
         });
       });
