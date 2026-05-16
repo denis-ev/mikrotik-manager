@@ -158,7 +158,7 @@ function DeviceLocationsMap({ devices }: { devices: Device[] }) {
 function HealthBar({
   summary, devices, wirelessCount, clientSparkline,
 }: {
-  summary: { devices: { total: number; online: number; offline: number }; clients: { active: number; total: number }; alerts: { critical: number; warning: number } } | undefined;
+  summary: { devices: { total: number; online: number; offline: number }; clients: { active: number; total: number }; alerts: { critical: number; warning: number }; availability?: { fleetUptimePct30d: number } } | undefined;
   devices: Device[];
   wirelessCount: number;
   clientSparkline: number[];
@@ -233,6 +233,14 @@ function HealthBar({
               : 'none',
             spark: [] as number[],
             color: (summary?.alerts.critical ?? 0) > 0 ? 'var(--bad)' : 'var(--ink-3)',
+          },
+          {
+            label: 'Uptime 30d',
+            value: summary?.availability != null
+              ? `${summary.availability.fleetUptimePct30d.toFixed(1)}%`
+              : '—',
+            spark: [] as number[],
+            color: (summary?.availability?.fleetUptimePct30d ?? 100) >= 99 ? 'var(--accent)' : (summary?.availability?.fleetUptimePct30d ?? 100) >= 95 ? 'var(--warn)' : 'var(--bad)',
           },
         ].map(({ label, value, spark, color }) => (
           <div key={label} style={{ minWidth: 110, paddingLeft: 20, borderLeft: '1px solid var(--line)' }}>

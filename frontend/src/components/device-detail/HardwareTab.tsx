@@ -321,6 +321,12 @@ export default function HardwareTab({ deviceId }: { deviceId: number }) {
     refetchInterval: 30_000,
   });
 
+  const { data: poeData } = useQuery({
+    queryKey: ['device-poe', deviceId],
+    queryFn: () => metricsApi.devicePoe(deviceId).then((r) => r.data),
+    refetchInterval: 30_000,
+  });
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-48">
@@ -472,6 +478,31 @@ export default function HardwareTab({ deviceId }: { deviceId: number }) {
               />
             ))}
           </Section>
+        )}
+
+        {poeData && poeData.ports.length > 0 && (
+          <div className="lg:col-span-2">
+            <Section title={`PoE Budget — ${poeData.totalWatts.toFixed(1)} W total`} icon={<Zap className="w-4 h-4" />} grid={false}>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                {poeData.ports.filter(p => p.watts > 0).map((p) => (
+                  <div key={p.port} className="rounded-lg p-3" style={{ background: 'var(--surface-2)' }}>
+                    <div className="text-xs font-mono text-gray-500 dark:text-slate-400 mb-1">{p.port}</div>
+                    <div className="text-lg font-bold text-yellow-500">{p.watts.toFixed(1)} W</div>
+                    <div className="text-xs text-gray-400 dark:text-slate-500">
+                      {p.voltage_v.toFixed(1)} V · {p.current_ma.toFixed(0)} mA
+                    </div>
+                  </div>
+                ))}
+                {poeData.ports.filter(p => p.watts === 0).length > 0 && (
+                  <div className="rounded-lg p-3 opacity-40" style={{ background: 'var(--surface-2)' }}>
+                    <div className="text-xs text-gray-500 dark:text-slate-400">
+                      {poeData.ports.filter(p => p.watts === 0).length} port(s) inactive
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Section>
+          </div>
         )}
       </div>
     </div>

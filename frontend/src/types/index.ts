@@ -230,6 +230,21 @@ export interface MetricsSummary {
   devices: { total: number; online: number; offline: number };
   clients: { total: number; active: number };
   alerts: { critical: number; warning: number };
+  availability?: { fleetUptimePct30d: number };
+}
+
+export interface DeviceAvailability {
+  uptimePct: number;
+  totalOutages: number;
+  longestOutageSec: number;
+  totalOutageSec: number;
+  outages: {
+    id: number;
+    went_offline_at: string;
+    came_back_online_at: string | null;
+    duration_seconds: number | null;
+  }[];
+  range: string;
 }
 
 export interface TimeSeriesPoint {

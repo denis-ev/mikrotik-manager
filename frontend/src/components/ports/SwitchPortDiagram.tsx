@@ -56,10 +56,10 @@ function portState(port: SwitchPort): 'up' | 'down' | 'disabled' {
 }
 
 function PortTile({
-  port, selected, hovered, isMember,
+  port, selected, hovered, isMember, watts,
   onClick, onMouseEnter, onMouseLeave, onDoubleClick,
 }: {
-  port: SwitchPort; selected: boolean; hovered: boolean; isMember?: boolean;
+  port: SwitchPort; selected: boolean; hovered: boolean; isMember?: boolean; watts?: number;
   onClick: (e: React.MouseEvent) => void;
   onMouseEnter: () => void; onMouseLeave: () => void; onDoubleClick: () => void;
 }) {
@@ -74,7 +74,7 @@ function PortTile({
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onDoubleClick={onDoubleClick}
-      title={`${port.name}${port.comment ? ` — ${port.comment}` : ''}${port.speed ? ` · ${port.speed}` : ''}`}
+      title={`${port.name}${port.comment ? ` — ${port.comment}` : ''}${port.speed ? ` · ${port.speed}` : ''}${watts && watts > 0 ? ` · ${watts.toFixed(1)}W PoE` : ''}`}
       style={{
         width: 46, height: 46, borderRadius: 4, position: 'relative', flexShrink: 0,
         background: bg, border: `1px solid ${border}`,
@@ -90,6 +90,15 @@ function PortTile({
         boxShadow: state === 'up' && !selected ? '0 0 6px var(--accent)' : 'none',
       }} />
       <span>{portLabel(port.name)}</span>
+      {watts && watts > 0 ? (
+        <span style={{
+          position: 'absolute', bottom: 2, left: 0, right: 0, textAlign: 'center',
+          fontSize: 7, fontWeight: 700, color: selected ? '#fff' : '#f59e0b',
+          lineHeight: 1, letterSpacing: 0,
+        }}>
+          {watts.toFixed(0)}W
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -494,6 +503,16 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
     refetchInterval: 30_000,
   });
 
+  const { data: poeMetrics } = useQuery({
+    queryKey: ['device-poe', deviceId],
+    queryFn: () => metricsApi.devicePoe(deviceId).then((r) => r.data),
+    refetchInterval: 30_000,
+  });
+
+  const poeWattsMap = Object.fromEntries(
+    (poeMetrics?.ports ?? []).map(p => [p.port, p.watts])
+  );
+
   // Auto-open bridge config panel when navigated from the VLANs tab warning
   useEffect(() => {
     if (!autoOpenBridge || !data?.ports) return;
@@ -881,19 +900,19 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <div style={{ display: 'flex', gap: 4 }}>
                       {topRowPorts.map(port => (
-                        <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} isMember={bondMemberMap.has(port.name)} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
+                        <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} isMember={bondMemberMap.has(port.name)} watts={poeWattsMap[port.name]} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
                       ))}
                     </div>
                     <div style={{ display: 'flex', gap: 4 }}>
                       {bottomRowPorts.map(port => (
-                        <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} isMember={bondMemberMap.has(port.name)} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
+                        <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} isMember={bondMemberMap.has(port.name)} watts={poeWattsMap[port.name]} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
                       ))}
                     </div>
                   </div>
                 ) : (
                   <div style={{ display: 'flex', gap: 4 }}>
                     {topRowPorts.map(port => (
-                      <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} isMember={bondMemberMap.has(port.name)} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
+                      <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} isMember={bondMemberMap.has(port.name)} watts={poeWattsMap[port.name]} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
                     ))}
                   </div>
                 )}
@@ -908,7 +927,7 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
                 </div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: individualSfpPorts.length * 52 }}>
                   {individualSfpPorts.map(port => (
-                    <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
+                    <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} watts={poeWattsMap[port.name]} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
                   ))}
                 </div>
               </div>
@@ -929,7 +948,7 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
                       const lane = isSingleMode ? cage.singlePort! : cage.lanes[li];
                       const visualPort: SwitchPort = (isSingleMode || isSingleCable) ? { ...refPort, running: refPort.running, disabled: refPort.disabled } : lane;
                       return (
-                        <PortTile key={li} port={visualPort} selected={selectedPorts.has(lane.name)} hovered={hoveredPort === lane.name} onClick={e => togglePort(lane.name, e)} onMouseEnter={() => setHoveredPort(lane.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(lane)} />
+                        <PortTile key={li} port={visualPort} selected={selectedPorts.has(lane.name)} hovered={hoveredPort === lane.name} watts={poeWattsMap[lane.name]} onClick={e => togglePort(lane.name, e)} onMouseEnter={() => setHoveredPort(lane.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(lane)} />
                       );
                     })}
                   </div>
@@ -943,7 +962,7 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
                 <div className="mono" style={{ fontSize: 10, color: 'var(--ink-4)', letterSpacing: '.1em' }}>BRIDGE</div>
                 <div style={{ display: 'flex', gap: 4 }}>
                   {bridgePorts.map(port => (
-                    <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
+                    <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} watts={poeWattsMap[port.name]} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
                   ))}
                 </div>
               </div>
@@ -955,7 +974,7 @@ export default function SwitchPortDiagram({ deviceId, autoOpenBridge, onBridgeOp
                 <div className="mono" style={{ fontSize: 10, color: 'var(--ink-4)', letterSpacing: '.1em' }}>BOND</div>
                 <div style={{ display: 'flex', gap: 4 }}>
                   {bondPorts.map(port => (
-                    <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
+                    <PortTile key={port.name} port={port} selected={selectedPorts.has(port.name)} hovered={hoveredPort === port.name} watts={poeWattsMap[port.name]} onClick={e => togglePort(port.name, e)} onMouseEnter={() => setHoveredPort(port.name)} onMouseLeave={() => setHoveredPort(null)} onDoubleClick={() => canWrite && openEditPanel(port)} />
                   ))}
                 </div>
               </div>

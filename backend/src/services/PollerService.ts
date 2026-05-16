@@ -96,6 +96,8 @@ export class PollerService {
       const spectralIntervalHours = (appSettings['spectral_scan_interval_hours'] as number) || 24;
       const apScanEnabled         = appSettings['ap_scan_enabled'] === true;
       const apScanIntervalHours   = (appSettings['ap_scan_interval_hours'] as number) || 24;
+      const backupScheduleEnabled = appSettings['backup_schedule_enabled'] === true;
+      const backupScheduleCron    = (appSettings['backup_schedule_cron'] as string) || '0 2 * * *';
 
       const devices = await query<DeviceRow>(
         `SELECT * FROM devices WHERE status != 'disabled'`
@@ -197,6 +199,19 @@ export class PollerService {
           console.error('[Poller] Client prune error:', e)
         );
       }
+
+      // Scheduled backups — fire when the cron expression matches the current minute/hour.
+      // Redis key with 1-hour TTL prevents double-firing within the same cron window.
+      if (backupScheduleEnabled && this.cronMatchesNow(backupScheduleCron)) {
+        const backupKey = 'task:scheduled_backup';
+        const lastBackup = await this.getTimestamp(backupKey);
+        if (now - lastBackup > 3_600_000) {
+          await this.setTimestamp(backupKey, now);
+          this.runScheduledBackups().catch((e) =>
+            console.error('[Poller] Scheduled backup error:', e)
+          );
+        }
+      }
     } catch (err) {
       console.error('Scheduler error:', err);
     }
@@ -209,7 +224,8 @@ export class PollerService {
          WHERE key IN ('mac_scan_enabled', 'mac_scan_interval', 'reverse_dns_enabled',
                        'retention_clients_days', 'spectral_scan_enabled',
                        'spectral_scan_interval_hours', 'ap_scan_enabled',
-                       'ap_scan_interval_hours')`
+                       'ap_scan_interval_hours', 'backup_schedule_enabled',
+                       'backup_schedule_cron')`
       );
       const map: Record<string, unknown> = {};
       for (const row of rows) map[row.key] = row.value;
@@ -217,6 +233,49 @@ export class PollerService {
     } catch {
       return {};
     }
+  }
+
+  // Returns true if the 5-part cron expression matches the current minute/hour.
+  // Supports: *, exact numbers, comma lists, ranges (a-b), and step values (*/n).
+  private cronMatchesNow(cron: string): boolean {
+    const parts = cron.trim().split(/\s+/);
+    if (parts.length < 5) return false;
+    const [minuteField, hourField] = parts;
+    const now = new Date();
+    const matchField = (field: string, val: number): boolean => {
+      if (field === '*') return true;
+      return field.split(',').some((f) => {
+        if (f.includes('/')) {
+          const [base, step] = f.split('/');
+          const start = base === '*' ? 0 : Number(base);
+          return val >= start && (val - start) % Number(step) === 0;
+        }
+        if (f.includes('-')) {
+          const [lo, hi] = f.split('-').map(Number);
+          return val >= lo && val <= hi;
+        }
+        return Number(f) === val;
+      });
+    };
+    return matchField(minuteField, now.getMinutes()) && matchField(hourField, now.getHours());
+  }
+
+  private async runScheduledBackups(): Promise<void> {
+    const { BackupService } = await import('./BackupService');
+    const backupService = new BackupService();
+    const devices = await query<{
+      id: number; name: string; ip_address: string; ssh_port: number;
+      ssh_username: string; ssh_password_encrypted: string;
+      api_username: string; api_password_encrypted: string;
+    }>(`SELECT id, name, ip_address, ssh_port, ssh_username, ssh_password_encrypted,
+               api_username, api_password_encrypted
+        FROM devices WHERE status = 'online'`);
+    console.log(`[Poller] Starting scheduled backup for ${devices.length} online device(s)`);
+    const results = await Promise.allSettled(
+      devices.map((d) => backupService.createBackup(d, 'Scheduled backup', 'scheduled'))
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    console.log(`[Poller] Scheduled backup complete: ${succeeded}/${devices.length} succeeded`);
   }
 
   private async resolveClientHostnames(): Promise<void> {
@@ -376,6 +435,16 @@ export class PollerService {
           deviceId: device.id,
           deviceName: device.name,
         }).catch(() => {});
+        // Close the open outage row if one exists
+        if (prevStatus === 'offline') {
+          query(
+            `UPDATE device_availability
+             SET came_back_online_at = NOW(),
+                 duration_seconds = EXTRACT(EPOCH FROM (NOW() - went_offline_at))::INTEGER
+             WHERE device_id = $1 AND came_back_online_at IS NULL`,
+            [device.id]
+          ).catch(() => {});
+        }
       }
 
       this.io?.emit('device:updated', { deviceId: device.id });
@@ -620,6 +689,11 @@ export class PollerService {
         deviceId,
         deviceName: device?.name,
       }).catch(() => {});
+      // Open a new availability outage row
+      query(
+        `INSERT INTO device_availability (device_id, went_offline_at) VALUES ($1, NOW())`,
+        [deviceId]
+      ).catch(() => {});
     }
     // Mark all clients for this device inactive — updateClients() never ran because connect() failed.
     await query(`UPDATE clients SET active = FALSE WHERE device_id = $1`, [deviceId]);

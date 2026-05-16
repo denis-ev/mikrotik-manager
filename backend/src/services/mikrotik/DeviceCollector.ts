@@ -71,6 +71,9 @@ export class DeviceCollector {
     if (this.device.device_type === 'wireless_ap') {
       await this.collectWirelessStats();
     }
+    if (this.device.device_type === 'switch') {
+      await this.collectPoePower();
+    }
     await this.updateDeviceStatus('online');
   }
 
@@ -1725,6 +1728,37 @@ export class DeviceCollector {
 
   async getAllPoEStatus(): Promise<Record<string, string>[]> {
     return this.client.execute('/interface/ethernet/poe/print', { detail: '' }).catch(() => []);
+  }
+
+  async collectPoePower(): Promise<void> {
+    try {
+      const ports = await this.client
+        .execute('/interface/ethernet/poe/monitor', { once: '' })
+        .catch(() => [] as Record<string, string>[]);
+      if (ports.length === 0) return;
+
+      const writeApi = getWriteApi();
+      for (const port of ports) {
+        const name = port['name'] || port['port-name'] || '';
+        if (!name) continue;
+        const watts = parseFloat(port['poe-out-voltage'] || '0') * parseFloat(port['poe-out-current'] || '0') / 1000;
+        const currentMa = parseFloat(port['poe-out-current'] || '0');
+        const voltageV = parseFloat(port['poe-out-voltage'] || '0');
+        writeApi.writePoint(
+          new Point('poe_power')
+            .tag('device_id', String(this.device.id))
+            .tag('device_name', this.device.name)
+            .tag('port', name)
+            .floatField('watts', parseFloat(watts.toFixed(2)))
+            .floatField('current_ma', currentMa)
+            .floatField('voltage_v', voltageV)
+            .timestamp(new Date())
+        );
+      }
+      await writeApi.flush().catch((e) => console.error('InfluxDB PoE flush error:', e));
+    } catch (err) {
+      console.error(`[${this.device.name}] Failed to collect PoE power:`, err);
+    }
   }
 
   // ─── Port VLAN config ─────────────────────────────────────────────────────

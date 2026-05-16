@@ -291,6 +291,16 @@ CREATE TABLE IF NOT EXISTS credential_presets (
 );
 ALTER TABLE credential_presets ADD COLUMN IF NOT EXISTS allow_operator_use BOOLEAN NOT NULL DEFAULT TRUE;
 
+-- Device availability (offline/online outage tracking)
+CREATE TABLE IF NOT EXISTS device_availability (
+  id                  SERIAL PRIMARY KEY,
+  device_id           INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  went_offline_at     TIMESTAMPTZ NOT NULL,
+  came_back_online_at TIMESTAMPTZ,
+  duration_seconds    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_device_availability_device ON device_availability(device_id, went_offline_at DESC);
+
 -- Wireless security profiles (WPA/WPA2/WPA3 config)
 CREATE TABLE IF NOT EXISTS wireless_security_profiles (
   id                    SERIAL PRIMARY KEY,

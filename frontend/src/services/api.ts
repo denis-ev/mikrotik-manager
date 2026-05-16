@@ -8,6 +8,7 @@ import type {
   DeviceEvent,
   Backup,
   MetricsSummary,
+  DeviceAvailability,
   TimeSeriesPoint,
   TrafficPoint,
   ResourcePoint,
@@ -370,6 +371,10 @@ export const metricsApi = {
     }),
   deviceResources: (deviceId: number, range = '24h') =>
     api.get<ResourcePoint[]>(`/metrics/device/${deviceId}/resources`, { params: { range } }),
+  deviceAvailability: (deviceId: number, range = '30d') =>
+    api.get<DeviceAvailability>(`/metrics/device/${deviceId}/availability`, { params: { range } }),
+  devicePoe: (deviceId: number) =>
+    api.get<{ ports: { port: string; watts: number; current_ma: number; voltage_v: number }[]; totalWatts: number; history: { time: string; port: string; watts: number }[] }>(`/metrics/device/${deviceId}/poe`),
 };
 
 // ─── Topology ────────────────────────────────────────────────────────────────

@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  ArrowLeft, RefreshCw, Activity, Cpu, MemoryStick, Clock, ExternalLink, TerminalSquare,
+  ArrowLeft, RefreshCw, Activity, Cpu, MemoryStick, Clock, ExternalLink, TerminalSquare, ShieldCheck,
 } from 'lucide-react';
-import { devicesApi } from '../services/api';
+import { devicesApi, metricsApi } from '../services/api';
 import { useCanWrite } from '../hooks/useCanWrite';
 import SwitchPortDiagram from '../components/ports/SwitchPortDiagram';
 import TerminalModal from '../components/TerminalModal';
@@ -62,6 +62,12 @@ export default function DeviceDetailPage() {
     queryFn: () => devicesApi.getResources(deviceId).then((r) => r.data),
     refetchInterval: 30_000,
     enabled: device?.status === 'online',
+  });
+
+  const { data: availability } = useQuery({
+    queryKey: ['device-availability', deviceId],
+    queryFn: () => metricsApi.deviceAvailability(deviceId, '30d').then((r) => r.data),
+    refetchInterval: 60_000,
   });
 
   const syncMutation = useMutation({
@@ -263,6 +269,56 @@ export default function DeviceDetailPage() {
                 {device.firmware_version || ''}
               </div>
             </div>
+          </div>
+
+          {/* Availability card */}
+          <div className="card p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldCheck className="w-4 h-4 text-blue-500" />
+              <span className="text-sm font-semibold text-gray-900 dark:text-white">30-Day Availability</span>
+            </div>
+            {availability ? (
+              <div className="flex flex-wrap gap-6">
+                <div>
+                  <div className={clsx(
+                    'text-3xl font-bold',
+                    availability.uptimePct >= 99 ? 'text-green-500' : availability.uptimePct >= 95 ? 'text-yellow-500' : 'text-red-500'
+                  )}>
+                    {availability.uptimePct.toFixed(2)}%
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">Uptime</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold text-gray-900 dark:text-white">{availability.totalOutages}</div>
+                  <div className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">Outages</div>
+                </div>
+                {availability.longestOutageSec > 0 && (
+                  <div>
+                    <div className="text-2xl font-bold text-gray-900 dark:text-white">
+                      {availability.longestOutageSec < 60
+                        ? `${availability.longestOutageSec}s`
+                        : availability.longestOutageSec < 3600
+                        ? `${Math.round(availability.longestOutageSec / 60)}m`
+                        : `${(availability.longestOutageSec / 3600).toFixed(1)}h`}
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">Longest outage</div>
+                  </div>
+                )}
+                <div className="flex-1 min-w-[120px] self-center">
+                  <div className="h-2 bg-gray-200 dark:bg-slate-600 rounded-full overflow-hidden">
+                    <div
+                      className={clsx(
+                        'h-full rounded-full transition-all',
+                        availability.uptimePct >= 99 ? 'bg-green-500' : availability.uptimePct >= 95 ? 'bg-yellow-500' : 'bg-red-500'
+                      )}
+                      style={{ width: `${availability.uptimePct}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-gray-400 dark:text-slate-500">No availability data yet</div>
+            )}
           </div>
 
           {/* System details */}

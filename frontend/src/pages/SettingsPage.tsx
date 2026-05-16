@@ -496,6 +496,53 @@ export default function SettingsPage() {
               ))}
             </div>
           </div>
+
+          {/* Scheduled Backups */}
+          <div className="card p-5">
+            <h3 className="font-semibold text-gray-900 dark:text-white mb-1">Scheduled Backups</h3>
+            <p className="text-xs text-gray-400 dark:text-slate-500 mb-4">
+              Automatically backs up all online devices on a cron schedule via SSH export.
+              Backups appear in the Backups section with type <code className="font-mono">scheduled</code>.
+            </p>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-gray-700 dark:text-slate-300">Enable scheduled backups</div>
+                <button
+                  onClick={() => isAdmin && updateSettingsMutation.mutate({ backup_schedule_enabled: !settings['backup_schedule_enabled'] })}
+                  disabled={!isAdmin}
+                  className={clsx(
+                    'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200',
+                    isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
+                    settings['backup_schedule_enabled'] ? 'bg-blue-600' : 'bg-gray-300 dark:bg-slate-600'
+                  )}
+                >
+                  <span className={clsx(
+                    'inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200',
+                    settings['backup_schedule_enabled'] ? 'translate-x-5' : 'translate-x-0'
+                  )} />
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-medium text-gray-700 dark:text-slate-300">Cron schedule</div>
+                  <div className="text-xs text-gray-400">Standard 5-part cron expression (minute hour day month weekday)</div>
+                </div>
+                <input
+                  type="text"
+                  className="input w-36 text-center font-mono text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  value={(settings['backup_schedule_cron'] as string) ?? '0 2 * * *'}
+                  onChange={(e) => updateSettingsMutation.mutate({ backup_schedule_cron: e.target.value })}
+                  placeholder="0 2 * * *"
+                  disabled={!isAdmin || !settings['backup_schedule_enabled']}
+                />
+              </div>
+              <p className="text-xs text-gray-400 dark:text-slate-500">
+                Examples: <code className="font-mono">0 2 * * *</code> = daily at 2:00 AM &nbsp;·&nbsp;
+                <code className="font-mono">0 3 * * 0</code> = weekly Sunday at 3:00 AM &nbsp;·&nbsp;
+                <code className="font-mono">0 */6 * * *</code> = every 6 hours
+              </p>
+            </div>
+          </div>
         </div>
       )}
 

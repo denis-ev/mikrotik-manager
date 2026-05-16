@@ -213,9 +213,103 @@ router.get('/device/:deviceId/resources', async (req: Request, res: Response) =>
   res.json(Object.values(pivoted).sort((a, b) => String(a['time']).localeCompare(String(b['time']))));
 });
 
+// GET /api/metrics/device/:deviceId/poe - current PoE power per port + 1h time series
+router.get('/device/:deviceId/poe', async (req: Request, res: Response) => {
+  const queryApi = getQueryApi();
+  const deviceId = req.params.deviceId;
+
+  const currentFlux = `
+    from(bucket: "${bucket}")
+      |> range(start: -5m)
+      |> filter(fn: (r) => r._measurement == "poe_power")
+      |> filter(fn: (r) => r.device_id == "${deviceId}")
+      |> filter(fn: (r) => r._field == "watts" or r._field == "current_ma" or r._field == "voltage_v")
+      |> last()
+  `;
+
+  const portData: Record<string, { port: string; watts: number; current_ma: number; voltage_v: number }> = {};
+  try {
+    await queryApi.collectRows(currentFlux, (row, tableMeta) => {
+      const port = tableMeta.get(row, 'port') as string;
+      const field = tableMeta.get(row, '_field') as string;
+      const value = Number(tableMeta.get(row, '_value')) || 0;
+      if (!portData[port]) portData[port] = { port, watts: 0, current_ma: 0, voltage_v: 0 };
+      if (field === 'watts') portData[port].watts = value;
+      if (field === 'current_ma') portData[port].current_ma = value;
+      if (field === 'voltage_v') portData[port].voltage_v = value;
+    });
+  } catch { /* no data */ }
+
+  const historyFlux = `
+    from(bucket: "${bucket}")
+      |> range(start: -1h)
+      |> filter(fn: (r) => r._measurement == "poe_power")
+      |> filter(fn: (r) => r.device_id == "${deviceId}")
+      |> filter(fn: (r) => r._field == "watts")
+      |> aggregateWindow(every: 1m, fn: mean, createEmpty: false)
+  `;
+
+  const history: { time: string; port: string; watts: number }[] = [];
+  try {
+    await queryApi.collectRows(historyFlux, (row, tableMeta) => {
+      history.push({
+        time: tableMeta.get(row, '_time') as string,
+        port: tableMeta.get(row, 'port') as string,
+        watts: Number(tableMeta.get(row, '_value')) || 0,
+      });
+    });
+  } catch { /* no data */ }
+
+  const ports = Object.values(portData);
+  const totalWatts = parseFloat(ports.reduce((s, p) => s + p.watts, 0).toFixed(2));
+
+  res.json({ ports, totalWatts, history });
+});
+
+// GET /api/metrics/device/:deviceId/availability?range=30d
+router.get('/device/:deviceId/availability', async (req: Request, res: Response) => {
+  const deviceId = parseInt(req.params.deviceId, 10);
+  const rangeRaw = String(req.query.range || '30d');
+  const allowedRanges: Record<string, string> = {
+    '7d': '7 days', '30d': '30 days', '90d': '90 days',
+  };
+  const intervalStr = allowedRanges[rangeRaw] ?? '30 days';
+
+  const outages = await query<{
+    id: number;
+    went_offline_at: string;
+    came_back_online_at: string | null;
+    duration_seconds: number | null;
+  }>(
+    `SELECT id, went_offline_at, came_back_online_at, duration_seconds
+     FROM device_availability
+     WHERE device_id = $1
+       AND went_offline_at > NOW() - ($2::text || '')::interval
+     ORDER BY went_offline_at DESC`,
+    [deviceId, intervalStr]
+  );
+
+  const rangeSeconds = parseInt(intervalStr, 10) * 86400;
+  const totalOutageSec = outages.reduce((sum, o) => {
+    const dur = o.duration_seconds ?? (o.came_back_online_at == null ? Math.round((Date.now() / 1000) - new Date(o.went_offline_at).getTime() / 1000) : 0);
+    return sum + dur;
+  }, 0);
+  const uptimePct = Math.max(0, Math.min(100, parseFloat(((1 - totalOutageSec / rangeSeconds) * 100).toFixed(2))));
+  const longestOutage = outages.reduce((max, o) => Math.max(max, o.duration_seconds ?? 0), 0);
+
+  res.json({
+    uptimePct,
+    totalOutages: outages.length,
+    longestOutageSec: longestOutage,
+    totalOutageSec,
+    outages,
+    range: rangeRaw,
+  });
+});
+
 // GET /api/metrics/summary - dashboard summary stats
 router.get('/summary', async (_req: Request, res: Response) => {
-  const [deviceStats, clientStats, alertStats] = await Promise.all([
+  const [deviceStats, clientStats, alertStats, availStats] = await Promise.all([
     query<{ total: string; online: string; offline: string }>(
       `SELECT
         COUNT(*) as total,
@@ -234,11 +328,23 @@ router.get('/summary', async (_req: Request, res: Response) => {
         COUNT(*) FILTER (WHERE severity='warning') as warning
        FROM events WHERE event_time > NOW() - INTERVAL '24 hours'`
     ),
+    query<{ total_outage_sec: string }>(
+      `SELECT COALESCE(SUM(COALESCE(duration_seconds, 0)), 0)::text AS total_outage_sec
+       FROM device_availability
+       WHERE went_offline_at > NOW() - INTERVAL '30 days'`
+    ),
   ]);
+
+  const deviceTotal = parseInt(deviceStats[0]?.total || '0', 10);
+  const totalOutageSec = parseInt(availStats[0]?.total_outage_sec || '0', 10);
+  const possibleDeviceSeconds = deviceTotal * 30 * 86400;
+  const fleetUptimePct = possibleDeviceSeconds > 0
+    ? parseFloat(Math.max(0, Math.min(100, (1 - totalOutageSec / possibleDeviceSeconds) * 100)).toFixed(2))
+    : 100;
 
   res.json({
     devices: {
-      total: parseInt(deviceStats[0]?.total || '0', 10),
+      total: deviceTotal,
       online: parseInt(deviceStats[0]?.online || '0', 10),
       offline: parseInt(deviceStats[0]?.offline || '0', 10),
     },
@@ -249,6 +355,9 @@ router.get('/summary', async (_req: Request, res: Response) => {
     alerts: {
       critical: parseInt(alertStats[0]?.critical || '0', 10),
       warning: parseInt(alertStats[0]?.warning || '0', 10),
+    },
+    availability: {
+      fleetUptimePct30d: fleetUptimePct,
     },
   });
 });

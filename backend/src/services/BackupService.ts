@@ -25,7 +25,7 @@ export class BackupService {
     }
   }
 
-  async createBackup(device: BackupDevice, notes?: string): Promise<number> {
+  async createBackup(device: BackupDevice, notes?: string, type: string = 'manual'): Promise<number> {
     const sshUser = device.ssh_username || device.api_username;
     const sshPass = device.ssh_password_encrypted
       ? decrypt(device.ssh_password_encrypted)
@@ -53,8 +53,8 @@ export class BackupService {
 
     const rows = await query<{ id: number }>(
       `INSERT INTO backups (device_id, filename, file_path, size_bytes, backup_type, notes)
-       VALUES ($1,$2,$3,$4,'manual',$5) RETURNING id`,
-      [device.id, filename, filePath, stats.size, notes || null]
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [device.id, filename, filePath, stats.size, type, notes || null]
     );
 
     return rows[0].id;
