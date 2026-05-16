@@ -1799,7 +1799,7 @@ router.post('/:id/tools/capture', requireWrite, async (req: Request, res: Respon
     // Stop any previous capture before reconfiguring
     await client.execute('/tool/sniffer/stop').catch(() => {});
     const setParams: Record<string, string> = { 'file-name': fileName, 'file-limit': '10240' };
-    if (iface) setParams['interface'] = iface;
+    if (iface) setParams['filter-interface'] = iface;
     if (filter_ip) setParams['filter-ip-address'] = filter_ip;
     await client.execute('/tool/sniffer/set', setParams);
     console.log(`[capture] sniffer configured; starting ${captureSec}s capture`);
