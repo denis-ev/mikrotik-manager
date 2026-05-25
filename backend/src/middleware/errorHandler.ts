@@ -6,7 +6,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
-  console.error(`[${req.method} ${req.path}]`, err.message);
+  console.error(`[${req.method} ${req.path.replace(/[\r\n]/g, '_')}]`, err.message);
 
   if (res.headersSent) return;
 

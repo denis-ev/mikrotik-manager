@@ -184,7 +184,7 @@ router.get('/:mac/traffic', async (req: Request, res: Response) => {
       if (time && field && value != null) raw.push({ time, field, value });
     });
   } catch (err) {
-    console.error(`[clients/traffic] Flux error for ${mac}:`, err);
+    console.error(`[clients/traffic] Flux error for ${mac.replace(/[\r\n]/g, '_')}:`, err);
   }
 
   // Separate tx and rx series, sort by time, then compute non-negative deltas
@@ -242,7 +242,7 @@ router.get('/:mac/signal', async (req: Request, res: Response) => {
       if (time && value != null) points.push({ time, signal_strength: Math.round(value) });
     });
   } catch (err) {
-    console.error(`[clients/signal] Flux error for ${mac}:`, err);
+    console.error(`[clients/signal] Flux error for ${mac.replace(/[\r\n]/g, '_')}:`, err);
   }
 
   return res.json(points);
