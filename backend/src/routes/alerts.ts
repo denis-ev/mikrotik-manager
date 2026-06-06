@@ -20,6 +20,7 @@ const DEFAULT_RULES = [
   { event_type: 'cert_expiry',       enabled: false, threshold: 14,   cooldown_min: 1440 },
   { event_type: 'device_discovered',        enabled: false, threshold: null, cooldown_min: 60   },
   { event_type: 'firmware_update_available', enabled: true,  threshold: null, cooldown_min: 1440 },
+  { event_type: 'config_drift',      enabled: false, threshold: null, cooldown_min: 15   },
 ];
 
 async function ensureDefaultRules(): Promise<void> {

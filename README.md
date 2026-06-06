@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.11.11_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.12.3_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -168,8 +168,18 @@ Per-device diagnostic and testing tools accessible from the device detail Tools 
 
 ### Backups
 - Trigger RouterOS backups on demand via SSH
-- **Scheduled automatic backups** — configurable cron schedule (e.g. nightly at 2 AM) with toggle in Settings; runs for all online devices
+- **Scheduled automatic backups** — pick a daily, weekly, or monthly schedule and time in Settings (no cron knowledge required); runs for all online devices
 - Download and manage backup files from the UI
+
+### Configuration History
+- Per-device config snapshots based on the device's full RouterOS `/export` — config-only, so counters and operational state never create noise — captured automatically whenever the configuration changes (deduplicated by content hash, so a snapshot is only stored on a real change)
+- **Config History** tab on each device with a timeline of snapshots and a one-line summary of what changed (e.g. `+8 / −3 lines`)
+- Side-by-side **line diff** between any two snapshots, rendered as readable RouterOS commands
+- **Capture snapshot** button for an on-demand checkpoint, with honest feedback when nothing has changed since the last one
+- **One-click rollback** — each snapshot links a restorable `.rsc` backup, so rolling back reuses the proven restore path
+- The snapshot and its backup are one artifact: snapshot backups are clearly badged **Config Snapshot** on the Backups page, and deleting one (from either place) removes the other so they never drift apart
+- Fires a `config_drift` alert (off by default) when a device's configuration changes
+- Snapshot cadence and retention configurable via `config_snapshot_interval_min` / `config_snapshot_retention`
 
 ### Alerts
 Configurable alert rules with cooldown periods:
@@ -179,6 +189,7 @@ Configurable alert rules with cooldown periods:
 - Firmware update available
 - RouterOS log errors and warnings
 - New device discovered
+- Configuration changed (drift detection)
 
 Alert delivery channels: **Email**, **Slack**, **Discord**, **Telegram**
 

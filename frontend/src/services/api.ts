@@ -17,6 +17,10 @@ import type {
   IpAddress,
   PortVlanConfig,
   PortMonitorData,
+  ConfigSnapshotMeta,
+  ConfigSnapshotFull,
+  ConfigDiffResponse,
+  ConfigCaptureResult,
 } from '../types';
 
 const api = axios.create({
@@ -374,6 +378,22 @@ export const backupsApi = {
     api.get(`/backups/${id}/download`, { responseType: 'blob' }),
   restore: (id: number) => api.post(`/backups/${id}/restore`),
   delete: (id: number) => api.delete(`/backups/${id}`),
+};
+
+// ─── Config History ────────────────────────────────────────────────────────────
+export const configHistoryApi = {
+  list: (deviceId: number) =>
+    api.get<ConfigSnapshotMeta[]>(`/config-history/${deviceId}`),
+  get: (deviceId: number, id: number) =>
+    api.get<ConfigSnapshotFull>(`/config-history/${deviceId}/${id}`),
+  diff: (deviceId: number, fromId: number, toId: number) =>
+    api.get<ConfigDiffResponse>(`/config-history/${deviceId}/${fromId}/diff/${toId}`),
+  capture: (deviceId: number) =>
+    api.post<ConfigCaptureResult>(`/config-history/${deviceId}/capture`),
+  rollback: (deviceId: number, id: number) =>
+    api.post<{ message: string }>(`/config-history/${deviceId}/${id}/rollback`),
+  delete: (deviceId: number, id: number) =>
+    api.delete(`/config-history/${deviceId}/${id}`),
 };
 
 // ─── Metrics ─────────────────────────────────────────────────────────────────

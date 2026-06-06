@@ -44,6 +44,7 @@ import switchesRoutes from './routes/switches';
 import routersRoutes from './routes/routers';
 import alertsRoutes from './routes/alerts';
 import configTemplatesRoutes from './routes/configTemplates';
+import configHistoryRoutes from './routes/configHistory';
 import wirelessRoutes from './routes/wireless';
 import networkServicesRoutes from './routes/networkServices';
 import credentialPresetsRoutes from './routes/credentialPresets';
@@ -218,6 +219,7 @@ app.use('/api/audit-log', auditLogRoutes);
 app.use('/api/tags', tagsRoutes);
 app.use('/api/maintenance-windows', maintenanceWindowsRoutes);
 app.use('/api/config-templates', configTemplatesRoutes);
+app.use('/api/config-history', configHistoryRoutes);
 app.use('/api/system', systemRoutes);
 
 // ─── Error Handler ────────────────────────────────────────────────────────────

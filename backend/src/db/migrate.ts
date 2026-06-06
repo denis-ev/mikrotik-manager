@@ -183,6 +183,20 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS latest_ros_version VARCHAR(20);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS routerboard_upgrade_available BOOLEAN DEFAULT FALSE;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS upgrade_firmware_version VARCHAR(20);
 
+-- Config history / drift detection: each snapshot stores the canonical /export
+-- .rsc text (config_text), deduped by content hash, and links to the restorable
+-- backup that holds the same .rsc. The snapshot and its backup are one artifact,
+-- so deleting the backup cascades to remove the snapshot (kept consistent).
+ALTER TABLE device_configs ADD COLUMN IF NOT EXISTS config_hash VARCHAR(64);
+ALTER TABLE device_configs ADD COLUMN IF NOT EXISTS change_summary TEXT;
+ALTER TABLE device_configs ADD COLUMN IF NOT EXISTS config_text TEXT;
+ALTER TABLE device_configs ADD COLUMN IF NOT EXISTS backup_id INTEGER REFERENCES backups(id) ON DELETE SET NULL;
+-- Upgrade the backup_id FK from SET NULL to CASCADE so a snapshot and its backup
+-- stay in lockstep (deleting the backup removes the now-unrestorable snapshot).
+ALTER TABLE device_configs DROP CONSTRAINT IF EXISTS device_configs_backup_id_fkey;
+ALTER TABLE device_configs ADD CONSTRAINT device_configs_backup_id_fkey
+  FOREIGN KEY (backup_id) REFERENCES backups(id) ON DELETE CASCADE;
+
 -- Cached IPv4/IPv6 addresses from /ip/address (per device) for topology resolution:
 -- neighbors seen only by IP (CDP/MNDP) can be matched to managed devices even
 -- when the address is not the device's management IP.
@@ -407,6 +421,9 @@ const DEFAULT_SETTINGS = [
   { key: 'ap_scan_interval_hours', value: 24 },
   { key: 'login_rate_limit_window_sec', value: 60 },
   { key: 'login_rate_limit_max', value: 10 },
+  { key: 'config_snapshot_enabled', value: true },
+  { key: 'config_snapshot_interval_min', value: 60 },
+  { key: 'config_snapshot_retention', value: 30 },
 ];
 
 export async function runMigrations(): Promise<void> {

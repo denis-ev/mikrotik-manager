@@ -187,7 +187,7 @@ export interface Backup {
   device_name?: string;
   filename: string;
   size_bytes?: number;
-  backup_type: 'manual' | 'scheduled';
+  backup_type: 'manual' | 'scheduled' | 'config-snapshot';
   notes?: string;
   created_at: string;
 }
@@ -338,4 +338,36 @@ export interface WirelessMetricPoint {
   ssid?: string;
   registered_clients?: number;
   noise_floor?: number;
+}
+
+export interface ConfigSnapshotMeta {
+  id: number;
+  device_id: number;
+  config_hash: string | null;
+  change_summary: string | null;
+  backup_id: number | null;
+  has_backup: boolean;
+  collected_at: string;
+}
+
+export interface ConfigSnapshotFull extends ConfigSnapshotMeta {
+  config_text: string | null;
+  text: string;
+}
+
+export interface ConfigDiffSide {
+  id: number;
+  text: string;
+  collected_at: string;
+}
+
+export interface ConfigDiffResponse {
+  from: ConfigDiffSide;
+  to: ConfigDiffSide;
+}
+
+export interface ConfigCaptureResult {
+  created: boolean;
+  message: string;
+  snapshot: ConfigSnapshotMeta;
 }

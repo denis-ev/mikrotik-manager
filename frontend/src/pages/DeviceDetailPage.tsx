@@ -13,12 +13,13 @@ import VlansTab from '../components/device-detail/VlansTab';
 import RoutingTab from '../components/device-detail/RoutingTab';
 import FirewallTab from '../components/device-detail/FirewallTab';
 import SystemConfigTab from '../components/device-detail/SystemConfigTab';
+import ConfigHistoryTab from '../components/device-detail/ConfigHistoryTab';
 import HardwareTab from '../components/device-detail/HardwareTab';
 import ToolsTab from '../components/device-detail/ToolsTab';
 import RadiosTab from '../components/device-detail/RadiosTab';
 import clsx from 'clsx';
 
-type TabKey = 'overview' | 'ports' | 'vlans' | 'routing' | 'firewall' | 'config' | 'hardware' | 'tools' | 'radios';
+type TabKey = 'overview' | 'ports' | 'vlans' | 'routing' | 'firewall' | 'config' | 'config-history' | 'hardware' | 'tools' | 'radios';
 
 function formatUptime(raw: string): string {
   if (!raw) return '—';
@@ -106,6 +107,7 @@ export default function DeviceDetailPage() {
     { key: 'routing', label: 'Routing' },
     { key: 'firewall', label: 'Firewall' },
     { key: 'config', label: 'Config' },
+    { key: 'config-history', label: 'Config History' },
     { key: 'hardware', label: 'Hardware' },
     ...(isWirelessAP ? [{ key: 'radios' as TabKey, label: 'Radios' }] : []),
     { key: 'tools', label: 'Tools' },
@@ -370,6 +372,7 @@ export default function DeviceDetailPage() {
       {activeTab === 'routing' && <RoutingTab deviceId={deviceId} />}
       {activeTab === 'firewall' && <FirewallTab deviceId={deviceId} deviceType={device?.device_type} />}
       {activeTab === 'config' && <SystemConfigTab deviceId={deviceId} device={device} />}
+      {activeTab === 'config-history' && <ConfigHistoryTab deviceId={deviceId} />}
       {activeTab === 'hardware' && <HardwareTab deviceId={deviceId} />}
       {activeTab === 'radios' && <RadiosTab deviceId={deviceId} deviceStatus={device.status} />}
       {activeTab === 'tools' && <ToolsTab deviceId={deviceId} />}

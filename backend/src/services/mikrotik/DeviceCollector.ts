@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { RouterOSClient } from './RouterOSClient';
 import { query, queryOne } from '../../config/database';
 import { getWriteApi } from '../../config/influxdb';
@@ -5,6 +6,8 @@ import { Point } from '@influxdata/influxdb-client';
 import { decrypt } from '../../utils/crypto';
 import { lookupVendor } from '../../utils/oui';
 import { buildServerArpMap } from '../../utils/serverArp';
+import { BackupService } from '../BackupService';
+import { alertService } from '../AlertService';
 
 /** DB column limits for topology_links (see migrate.ts); reject oversize rows instead of silent truncation. */
 const TOPOLOGY_LINK_LIMITS = {
@@ -1061,34 +1064,148 @@ export class DeviceCollector {
 
   // ─── Full config snapshot ─────────────────────────────────────────────────
 
-  async saveFullConfig(): Promise<void> {
+  /**
+   * Strip the volatile header RouterOS stamps onto every `/export` (a line like
+   * `# 2026-06-06 14:26:09 by RouterOS 7.23.1`). Everything else in the export is
+   * configuration, so what remains hashes stably across exports of an unchanged
+   * device. We also trim trailing whitespace for a clean diff.
+   */
+  private static normalizeRsc(rsc: string): string {
+    return rsc
+      .split('\n')
+      .filter((line) => !/^# \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} by RouterOS/.test(line))
+      .join('\n')
+      .replace(/\s+$/, '');
+  }
+
+  /** Compact summary of an .rsc change as added/removed line counts. */
+  private static summarizeRscDiff(oldText: string, newText: string): string {
+    const counts = (text: string): Map<string, number> => {
+      const m = new Map<string, number>();
+      for (const raw of text.split('\n')) {
+        const line = raw.trim();
+        if (line) m.set(line, (m.get(line) ?? 0) + 1);
+      }
+      return m;
+    };
+    const oldC = counts(oldText);
+    const newC = counts(newText);
+    let added = 0;
+    let removed = 0;
+    for (const [line, n] of newC) added += Math.max(0, n - (oldC.get(line) ?? 0));
+    for (const [line, n] of oldC) removed += Math.max(0, n - (newC.get(line) ?? 0));
+    if (!added && !removed) return 'Settings modified';
+    const parts: string[] = [];
+    if (added) parts.push(`+${added}`);
+    if (removed) parts.push(`−${removed}`);
+    return `${parts.join(' / ')} line${added + removed === 1 ? '' : 's'}`;
+  }
+
+  /** Drop snapshots beyond the retention count, removing any linked .rsc backups too. */
+  private async pruneConfigSnapshots(): Promise<void> {
+    const retRow = await queryOne<{ value: number }>(
+      `SELECT value FROM app_settings WHERE key = 'config_snapshot_retention'`
+    );
+    const retention = typeof retRow?.value === 'number' && retRow.value > 0 ? retRow.value : 30;
+
+    const stale = await query<{ id: number; backup_id: number | null }>(
+      `SELECT id, backup_id FROM device_configs
+       WHERE device_id = $1 AND id NOT IN (
+         SELECT id FROM device_configs WHERE device_id = $1 ORDER BY collected_at DESC LIMIT $2
+       )`,
+      [this.device.id, retention]
+    );
+    if (!stale.length) return;
+
+    const backupService = new BackupService();
+    for (const row of stale) {
+      // Deleting the backup cascades to the device_configs row (FK ON DELETE CASCADE).
+      if (row.backup_id) {
+        await backupService.deleteBackup(row.backup_id).catch(() => { /* best-effort */ });
+      }
+    }
+    // Remove any rows that had no linked backup (cascade only covers linked ones).
+    await query(`DELETE FROM device_configs WHERE id = ANY($1::int[])`, [stale.map((r) => r.id)]);
+  }
+
+  /**
+   * Capture a config snapshot from the device's `/export` .rsc — the canonical,
+   * config-only, restorable representation. Deduplicates by content hash (no-op
+   * when nothing changed), stores the .rsc as a linked backup so the snapshot is
+   * restorable, and fires a `config_drift` alert when the config changed.
+   * Returns true when a new snapshot row was created, false on dedup/failure.
+   */
+  async snapshotConfig(reason = 'sync'): Promise<boolean> {
     try {
-      const [interfaces, vlans, routes, firewall, dhcp, dns] = await Promise.all([
-        this.client.execute('/interface/print', { detail: '' }).catch(() => []),
-        this.client.execute('/interface/bridge/vlan/print', { detail: '' }).catch(() => []),
-        this.client.execute('/ip/route/print', { detail: '' }).catch(() => []),
-        this.client.execute('/ip/firewall/filter/print', { detail: '' }).catch(() => []),
-        this.client.execute('/ip/dhcp-server/print', { detail: '' }).catch(() => []),
-        this.client.execute('/ip/dns/print', { detail: '' }).catch(() => []),
-      ]);
+      const backupService = new BackupService();
+      const device = this.device as unknown as import('../BackupService').BackupDevice;
 
-      const config = { interfaces, vlans, routes, firewall, dhcp, dns };
+      // The export requires SSH; without it there's no restorable snapshot to take.
+      let rsc: string;
+      try {
+        rsc = await backupService.exportConfig(device);
+      } catch (e) {
+        console.warn(`[${this.device.name}] config snapshot skipped — /export failed: ${(e as Error).message}`);
+        return false;
+      }
 
-      await query(
-        `INSERT INTO device_configs (device_id, config_json) VALUES ($1, $2)`,
-        [this.device.id, JSON.stringify(config)]
-      );
+      const text = DeviceCollector.normalizeRsc(rsc);
+      const hash = createHash('sha256').update(text).digest('hex');
 
-      // Keep only last 10 full config snapshots per device
-      await query(
-        `DELETE FROM device_configs WHERE device_id = $1 AND id NOT IN (
-           SELECT id FROM device_configs WHERE device_id = $1 ORDER BY collected_at DESC LIMIT 10
-         )`,
+      const latest = await queryOne<{ config_hash: string | null; config_text: string | null }>(
+        `SELECT config_hash, config_text FROM device_configs
+         WHERE device_id = $1 ORDER BY collected_at DESC LIMIT 1`,
         [this.device.id]
       );
+
+      // No change since the last snapshot — nothing to store.
+      if (latest && latest.config_hash === hash) return false;
+
+      const isFirst = !latest;
+      const summary = isFirst
+        ? 'Initial snapshot'
+        : DeviceCollector.summarizeRscDiff(latest.config_text ?? '', text);
+
+      // Persist the exact .rsc we just hashed as a restorable backup; the snapshot
+      // and this backup are one artifact (FK cascade keeps them in lockstep).
+      let backupId: number | null = null;
+      try {
+        backupId = await backupService.createBackupFromContent(
+          device,
+          rsc,
+          `Config snapshot (${reason})`,
+          'config-snapshot'
+        );
+      } catch (e) {
+        console.warn(`[${this.device.name}] snapshot backup unavailable: ${(e as Error).message}`);
+      }
+
+      await query(
+        `INSERT INTO device_configs (device_id, config_json, config_text, config_hash, change_summary, backup_id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [this.device.id, '{}', text, hash, summary, backupId]
+      );
+
+      await this.pruneConfigSnapshots();
+
+      // Alert on drift — skip the very first snapshot (nothing to compare against).
+      if (!isFirst) {
+        alertService.dispatch('config_drift', `Configuration changed on ${this.device.name}: ${summary}`, {
+          deviceId: this.device.id,
+          deviceName: this.device.name,
+          details: summary,
+        }).catch(() => { /* alerting is best-effort */ });
+      }
+      return true;
     } catch (err) {
       console.error(`[${this.device.name}] Failed to save config:`, err);
+      return false;
     }
+  }
+
+  /** Back-compat entry point used by the full-sync flow. */
+  async saveFullConfig(): Promise<void> {
+    await this.snapshotConfig('full-sync');
   }
 
   async updateDeviceStatus(status: string): Promise<void> {

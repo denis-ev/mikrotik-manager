@@ -10,6 +10,10 @@ import type { CertInfo, AlertRule, AlertChannel } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
 import type { User, UserRole } from '../types';
+import {
+  parseBackupCron, scheduleToCron, describeBackupSchedule, WEEKDAY_NAMES, ordinal,
+  type BackupFrequency,
+} from '../utils/backupSchedule';
 import clsx from 'clsx';
 import CredentialPresetsSettings from '../components/settings/CredentialPresetsSettings';
 
@@ -689,47 +693,113 @@ export default function SettingsPage() {
           <div className="card p-5">
             <h3 className="font-semibold text-gray-900 dark:text-white mb-1">Scheduled Backups</h3>
             <p className="text-xs text-gray-400 dark:text-slate-500 mb-4">
-              Automatically backs up all online devices on a cron schedule via SSH export.
+              Automatically backs up all online devices on a schedule via SSH export.
               Backups appear in the Backups section with type <code className="font-mono">scheduled</code>.
             </p>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-gray-700 dark:text-slate-300">Enable scheduled backups</div>
-                <button
-                  onClick={() => isAdmin && updateSettingsMutation.mutate({ backup_schedule_enabled: !settings['backup_schedule_enabled'] })}
-                  disabled={!isAdmin}
-                  className={clsx(
-                    'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200',
-                    isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
-                    settings['backup_schedule_enabled'] ? 'bg-blue-600' : 'bg-gray-300 dark:bg-slate-600'
+            {(() => {
+              const enabled = !!settings['backup_schedule_enabled'];
+              const sched = parseBackupCron(settings['backup_schedule_cron'] as string);
+              const controlsDisabled = !isAdmin || !enabled;
+              const apply = (next: typeof sched) =>
+                updateSettingsMutation.mutate({ backup_schedule_cron: scheduleToCron(next) });
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium text-gray-700 dark:text-slate-300">Enable scheduled backups</div>
+                    <button
+                      onClick={() => isAdmin && updateSettingsMutation.mutate({ backup_schedule_enabled: !enabled })}
+                      disabled={!isAdmin}
+                      className={clsx(
+                        'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent transition-colors duration-200',
+                        isAdmin ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
+                        enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-slate-600'
+                      )}
+                    >
+                      <span className={clsx(
+                        'inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200',
+                        enabled ? 'translate-x-5' : 'translate-x-0'
+                      )} />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* Frequency */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Frequency</label>
+                      <select
+                        className="input w-full text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        value={sched.frequency}
+                        disabled={controlsDisabled}
+                        onChange={(e) => apply({ ...sched, frequency: e.target.value as BackupFrequency })}
+                      >
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="monthly">Monthly</option>
+                      </select>
+                    </div>
+
+                    {/* Day selector — weekly or monthly */}
+                    {sched.frequency === 'weekly' && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Day of week</label>
+                        <select
+                          className="input w-full text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                          value={sched.weekday}
+                          disabled={controlsDisabled}
+                          onChange={(e) => apply({ ...sched, weekday: parseInt(e.target.value, 10) })}
+                        >
+                          {WEEKDAY_NAMES.map((name, i) => (
+                            <option key={i} value={i}>{name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {sched.frequency === 'monthly' && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Day of month</label>
+                        <select
+                          className="input w-full text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                          value={sched.dayOfMonth}
+                          disabled={controlsDisabled}
+                          onChange={(e) => apply({ ...sched, dayOfMonth: parseInt(e.target.value, 10) })}
+                        >
+                          {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+                            <option key={d} value={d}>{ordinal(d)}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Time of day */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 dark:text-slate-400 mb-1">Time</label>
+                      <input
+                        type="time"
+                        className="input w-full text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        value={`${String(sched.hour).padStart(2, '0')}:${String(sched.minute).padStart(2, '0')}`}
+                        disabled={controlsDisabled}
+                        onChange={(e) => {
+                          const [h, m] = e.target.value.split(':').map((n) => parseInt(n, 10));
+                          if (Number.isNaN(h) || Number.isNaN(m)) return;
+                          apply({ ...sched, hour: h, minute: m });
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <p className={clsx('text-xs', enabled ? 'text-gray-500 dark:text-slate-400' : 'text-gray-400 dark:text-slate-600')}>
+                    {enabled
+                      ? <>Runs <span className="font-medium text-gray-700 dark:text-slate-300">{describeBackupSchedule(sched).toLowerCase()}</span>, server time.</>
+                      : 'Enable to choose a backup schedule.'}
+                  </p>
+                  {sched.frequency === 'monthly' && (
+                    <p className="text-xs text-gray-400 dark:text-slate-500">
+                      Days are limited to 1–28 so the backup runs every month, including February.
+                    </p>
                   )}
-                >
-                  <span className={clsx(
-                    'inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200',
-                    settings['backup_schedule_enabled'] ? 'translate-x-5' : 'translate-x-0'
-                  )} />
-                </button>
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-medium text-gray-700 dark:text-slate-300">Cron schedule</div>
-                  <div className="text-xs text-gray-400">Standard 5-part cron expression (minute hour day month weekday)</div>
                 </div>
-                <input
-                  type="text"
-                  className="input w-36 text-center font-mono text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                  value={(settings['backup_schedule_cron'] as string) ?? '0 2 * * *'}
-                  onChange={(e) => updateSettingsMutation.mutate({ backup_schedule_cron: e.target.value })}
-                  placeholder="0 2 * * *"
-                  disabled={!isAdmin || !settings['backup_schedule_enabled']}
-                />
-              </div>
-              <p className="text-xs text-gray-400 dark:text-slate-500">
-                Examples: <code className="font-mono">0 2 * * *</code> = daily at 2:00 AM &nbsp;·&nbsp;
-                <code className="font-mono">0 3 * * 0</code> = weekly Sunday at 3:00 AM &nbsp;·&nbsp;
-                <code className="font-mono">0 */6 * * *</code> = every 6 hours
-              </p>
-            </div>
+              );
+            })()}
           </div>
         </div>
       )}

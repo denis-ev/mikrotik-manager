@@ -12,7 +12,8 @@ export type AlertEventType =
   | 'high_memory'
   | 'cert_expiry'
   | 'device_discovered'
-  | 'firmware_update_available';
+  | 'firmware_update_available'
+  | 'config_drift';
 
 export interface AlertContext {
   deviceId?: number;
@@ -51,6 +52,7 @@ const EVENT_LABELS: Record<string, string> = {
   cert_expiry:              'Certificate Expiring Soon',
   device_discovered:        'New Device Discovered',
   firmware_update_available: 'Firmware Update Available',
+  config_drift:             'Configuration Changed',
 };
 
 const EVENT_EMOJI: Record<string, string> = {
@@ -63,6 +65,7 @@ const EVENT_EMOJI: Record<string, string> = {
   cert_expiry:              '🔐',
   device_discovered:        '🔍',
   firmware_update_available: '🔄',
+  config_drift:             '📝',
 };
 
 export class AlertService {

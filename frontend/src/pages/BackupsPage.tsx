@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { HardDrive, Plus, Download, RotateCcw, Trash2, AlertCircle, Loader2 } from 'lucide-react';
+import { HardDrive, Plus, Download, RotateCcw, Trash2, AlertCircle, AlertTriangle, Loader2, X } from 'lucide-react';
 import { backupsApi, devicesApi } from '../services/api';
 import { useCanWrite } from '../hooks/useCanWrite';
+import type { Backup } from '../types';
 import { format } from 'date-fns';
 import clsx from 'clsx';
 
@@ -20,6 +21,8 @@ export default function BackupsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [restoreConfirm, setRestoreConfirm] = useState<number | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  // Config-snapshot backups are confirmed via a modal (deleting also removes the snapshot).
+  const [snapshotDeleteTarget, setSnapshotDeleteTarget] = useState<Backup | null>(null);
   const [error, setError] = useState('');
 
   const { data: backups = [], isLoading } = useQuery({
@@ -61,6 +64,12 @@ export default function BackupsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backups'] });
       setDeleteConfirm(null);
+      setSnapshotDeleteTarget(null);
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(msg || 'Delete failed');
+      setSnapshotDeleteTarget(null);
     },
   });
 
@@ -180,6 +189,7 @@ export default function BackupsPage() {
               <tr className="border-b border-gray-200 dark:border-slate-700">
                 <th className="table-header px-4 py-2.5 text-left">Device</th>
                 <th className="table-header px-4 py-2.5 text-left">Filename</th>
+                <th className="table-header px-4 py-2.5 text-left">Type</th>
                 <th className="table-header px-4 py-2.5 text-left">Size</th>
                 <th className="table-header px-4 py-2.5 text-left">Created</th>
                 <th className="table-header px-4 py-2.5 text-left">Notes</th>
@@ -194,6 +204,30 @@ export default function BackupsPage() {
                   </td>
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400">
                     {backup.filename}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={clsx(
+                        'inline-flex text-xs font-medium px-2 py-0.5 rounded whitespace-nowrap',
+                        backup.backup_type === 'config-snapshot' &&
+                          'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400',
+                        backup.backup_type === 'scheduled' &&
+                          'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400',
+                        backup.backup_type === 'manual' &&
+                          'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300'
+                      )}
+                      title={
+                        backup.backup_type === 'config-snapshot'
+                          ? 'Auto-created by Config History — tied to a config snapshot'
+                          : undefined
+                      }
+                    >
+                      {backup.backup_type === 'config-snapshot'
+                        ? 'Config Snapshot'
+                        : backup.backup_type === 'scheduled'
+                          ? 'Scheduled'
+                          : 'Manual'}
+                    </span>
                   </td>
                   <td className="px-4 py-2.5 text-gray-500 dark:text-slate-400">
                     {formatBytes(backup.size_bytes)}
@@ -257,7 +291,11 @@ export default function BackupsPage() {
                         </div>
                       ) : (
                         <button
-                          onClick={() => setDeleteConfirm(backup.id)}
+                          onClick={() =>
+                            backup.backup_type === 'config-snapshot'
+                              ? setSnapshotDeleteTarget(backup)
+                              : setDeleteConfirm(backup.id)
+                          }
                           className="p-1.5 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                           title="Delete"
                         >
@@ -270,6 +308,61 @@ export default function BackupsPage() {
               ))}
             </tbody>
           </table>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm deletion of a snapshot-linked backup (removes the config snapshot too) */}
+      {snapshotDeleteTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="card w-full max-w-md mx-4">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-slate-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-500" />
+                Delete config snapshot backup?
+              </h3>
+              <button
+                onClick={() => setSnapshotDeleteTarget(null)}
+                disabled={deleteMutation.isPending}
+                className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-slate-300"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-sm text-gray-600 dark:text-slate-300">
+                This backup is tied to a <span className="font-medium">Config History snapshot</span> for{' '}
+                <span className="font-medium text-gray-900 dark:text-white">{snapshotDeleteTarget.device_name || 'this device'}</span>.
+              </p>
+              <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-3">
+                <p className="text-sm text-amber-800 dark:text-amber-300">
+                  Deleting it will also <span className="font-semibold">permanently remove that snapshot from the
+                  device&apos;s Config History</span>, and you will no longer be able to roll back to it.
+                </p>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-slate-400 font-mono break-all">
+                {snapshotDeleteTarget.filename}
+              </p>
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setSnapshotDeleteTarget(null)}
+                  disabled={deleteMutation.isPending}
+                  className="btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteMutation.mutate(snapshotDeleteTarget.id)}
+                  disabled={deleteMutation.isPending}
+                  className="btn-danger inline-flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {deleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  Delete backup &amp; snapshot
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -25,19 +25,23 @@ export class BackupService {
     }
   }
 
-  async createBackup(device: BackupDevice, notes?: string, type: string = 'manual'): Promise<number> {
+  /** Run `/export compact` over SSH and return the raw .rsc text (no file written). */
+  async exportConfig(device: BackupDevice): Promise<string> {
     const sshUser = device.ssh_username || device.api_username;
     const sshPass = device.ssh_password_encrypted
       ? decrypt(device.ssh_password_encrypted)
       : decrypt(device.api_password_encrypted);
 
-    const exportContent = await this.sshExport(
-      device.ip_address,
-      device.ssh_port || 22,
-      sshUser,
-      sshPass
-    );
+    return this.sshExport(device.ip_address, device.ssh_port || 22, sshUser, sshPass);
+  }
 
+  /** Persist already-fetched .rsc text as a backup file + DB row. Returns the backup id. */
+  async createBackupFromContent(
+    device: BackupDevice,
+    content: string,
+    notes?: string,
+    type: string = 'manual'
+  ): Promise<number> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `${device.name.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.rsc`;
     const filePath = path.join(BACKUPS_DIR, String(device.id), filename);
@@ -48,7 +52,7 @@ export class BackupService {
       fs.mkdirSync(deviceDir, { recursive: true });
     }
 
-    fs.writeFileSync(filePath, exportContent, 'utf8');
+    fs.writeFileSync(filePath, content, 'utf8');
     const stats = fs.statSync(filePath);
 
     const rows = await query<{ id: number }>(
@@ -58,6 +62,11 @@ export class BackupService {
     );
 
     return rows[0].id;
+  }
+
+  async createBackup(device: BackupDevice, notes?: string, type: string = 'manual'): Promise<number> {
+    const exportContent = await this.exportConfig(device);
+    return this.createBackupFromContent(device, exportContent, notes, type);
   }
 
   async restoreBackup(backupId: number): Promise<void> {

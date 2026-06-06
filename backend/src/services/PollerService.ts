@@ -9,7 +9,7 @@ import { alertService } from './AlertService';
 
 interface PollJob {
   deviceId: number;
-  type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan';
+  type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
 }
 
 export class PollerService {
@@ -73,6 +73,8 @@ export class PollerService {
       await this.slowQueue.add('device-spectral', jobData, { attempts: 1 });
     } else if (type === 'apscan') {
       await this.slowQueue.add('device-apscan', jobData, { attempts: 1 });
+    } else if (type === 'configsnap') {
+      await this.slowQueue.add('device-configsnap', jobData, { attempts: 1 });
     }
   }
 
@@ -98,6 +100,8 @@ export class PollerService {
       const apScanIntervalHours   = (appSettings['ap_scan_interval_hours'] as number) || 24;
       const backupScheduleEnabled = appSettings['backup_schedule_enabled'] === true;
       const backupScheduleCron    = (appSettings['backup_schedule_cron'] as string) || '0 2 * * *';
+      const configSnapEnabled      = appSettings['config_snapshot_enabled'] !== false;
+      const configSnapIntervalMin  = (appSettings['config_snapshot_interval_min'] as number) || 60;
 
       const devices = await query<DeviceRow>(
         `SELECT * FROM devices WHERE status != 'disabled'`
@@ -151,6 +155,20 @@ export class PollerService {
           if (now - lastApScan > apScanIntervalHours * 3_600_000) {
             await this.scheduleDeviceSync(device.id, 'apscan');
             await this.setTimestamp(apScanKey, now);
+          }
+        }
+
+        // Config snapshot — capture config history & detect drift, user-configured
+        // interval (default 60min). The snapshot itself dedups by content hash, so
+        // this only stores a new row when the device config actually changed.
+        if (configSnapEnabled) {
+          const configKey = `poll:configsnap:${device.id}`;
+          const lastConfig = await this.getTimestamp(configKey);
+          if (now - lastConfig > configSnapIntervalMin * 60_000) {
+            await this.scheduleDeviceSync(device.id, 'configsnap');
+            // Keep the gate key alive for the full interval (+ buffer) so the
+            // snapshot honours the configured cadence rather than the default TTL.
+            await this.setTimestamp(configKey, now, configSnapIntervalMin * 60 + 120);
           }
         }
       }
@@ -235,12 +253,17 @@ export class PollerService {
     }
   }
 
-  // Returns true if the 5-part cron expression matches the current minute/hour.
-  // Supports: *, exact numbers, comma lists, ranges (a-b), and step values (*/n).
+  // Returns true if the 5-part cron expression matches the current time.
+  // Evaluates all five fields — minute, hour, day-of-month, month, day-of-week —
+  // so weekly (e.g. `0 3 * * 0`) and monthly (`0 3 1 * *`) schedules fire only on
+  // the right day, not every day. Supports: *, exact numbers, comma lists,
+  // ranges (a-b), and step values (*/n). Day-of-month and day-of-week follow the
+  // standard cron rule: when both are restricted the job runs if either matches;
+  // when only one is restricted, only that one must match.
   private cronMatchesNow(cron: string): boolean {
     const parts = cron.trim().split(/\s+/);
     if (parts.length < 5) return false;
-    const [minuteField, hourField] = parts;
+    const [minuteField, hourField, domField, monthField, dowField] = parts;
     const now = new Date();
     const matchField = (field: string, val: number): boolean => {
       if (field === '*') return true;
@@ -257,7 +280,21 @@ export class PollerService {
         return Number(f) === val;
       });
     };
-    return matchField(minuteField, now.getMinutes()) && matchField(hourField, now.getHours());
+
+    if (!matchField(minuteField, now.getMinutes())) return false;
+    if (!matchField(hourField, now.getHours())) return false;
+    if (!matchField(monthField, now.getMonth() + 1)) return false; // cron months are 1-12
+
+    // Day-of-month (1-31) and day-of-week (0-6, Sun=0). getDay() returns 0 for Sunday.
+    const domRestricted = domField !== '*';
+    const dowRestricted = dowField !== '*';
+    const domMatch = matchField(domField, now.getDate());
+    const dowMatch = matchField(dowField, now.getDay());
+    let dayMatch: boolean;
+    if (!domRestricted && !dowRestricted) dayMatch = true;
+    else if (domRestricted && dowRestricted) dayMatch = domMatch || dowMatch;
+    else dayMatch = domRestricted ? domMatch : dowMatch;
+    return dayMatch;
   }
 
   private async runScheduledBackups(): Promise<void> {
@@ -366,10 +403,10 @@ export class PollerService {
     }
   }
 
-  private async setTimestamp(key: string, ts: number): Promise<void> {
+  private async setTimestamp(key: string, ts: number, ttlSec = 600): Promise<void> {
     try {
       const { redis } = await import('../config/redis');
-      await redis.set(key, String(ts), 'EX', 600);
+      await redis.set(key, String(ts), 'EX', ttlSec);
     } catch { /* redis unavailable — timestamp not cached */ }
   }
 
@@ -597,12 +634,30 @@ export class PollerService {
     }
   }
 
+  private async processConfigSnapJob(data: PollJob): Promise<void> {
+    const device = await this.getDevice(data.deviceId);
+    if (!device) return;
+
+    const collector = new DeviceCollector(device);
+    try {
+      await collector.connect();
+      await collector.snapshotConfig('scheduled');
+    } catch (err) {
+      console.error(`[Poller] Config snapshot failed for ${device.name}:`, (err as Error).message);
+    } finally {
+      collector.disconnect();
+    }
+  }
+
   private async processSlowJob(data: PollJob): Promise<void> {
     if (data.type === 'spectral') {
       return this.processSpectralJob(data);
     }
     if (data.type === 'apscan') {
       return this.processApScanJob(data);
+    }
+    if (data.type === 'configsnap') {
+      return this.processConfigSnapJob(data);
     }
 
     const device = await this.getDevice(data.deviceId);
