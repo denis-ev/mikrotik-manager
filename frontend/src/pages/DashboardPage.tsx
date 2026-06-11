@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { metricsApi, eventsApi, devicesApi, clientsApi } from '../services/api';
+import { metricsApi, eventsApi, devicesApi, clientsApi, trafficApi } from '../services/api';
 import { useSocket } from '../hooks/useSocket';
 import { useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -259,7 +259,7 @@ function HealthBar({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function SummaryView(props: Record<string, any>) {
   const { summary, devices, wirelessCount, clientSparkline, clientsOverTime,
-    chartRange, setChartRange, topClients, recentEvents, severities, toggleSeverity, navigate } = props;
+    chartRange, setChartRange, topClients, usingNetflowTop, recentEvents, severities, toggleSeverity, navigate } = props;
   const formatBytes = (bytes: number) => {
     if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
     if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
@@ -435,19 +435,35 @@ function SummaryView(props: Record<string, any>) {
           </div>
         </div>
 
-        {/* Top talkers */}
+        {/* Top talkers — NetFlow-backed (same numbers as the Traffic page) when
+            the collector has data; otherwise device-reported connection counters. */}
         <div className="card" style={{ padding: '16px 18px' }}>
           <div className="flex items-baseline justify-between mb-3">
             <div className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Top talkers</div>
-            <span className="mono text-[11px]" style={{ color: 'var(--ink-3)' }}>by bytes · 1h</span>
+            <span
+              className="mono text-[11px]"
+              style={{ color: 'var(--ink-3)' }}
+              title={usingNetflowTop
+                ? 'Measured by the NetFlow collector over the last 24 hours'
+                : 'Device-reported counters since each client connected (enable NetFlow for time-windowed data)'}
+            >
+              {usingNetflowTop ? 'by bytes · 24h' : 'since connection'}
+            </span>
           </div>
           {(topClients as { mac_address: string; hostname?: string; total_bytes: number }[]).length > 0 ? (
             <div className="space-y-[1px]">
               {(topClients as { mac_address: string; hostname?: string; total_bytes: number }[]).slice(0, 5).map((c, i) => {
                 const maxB = (topClients as { total_bytes: number }[])[0]?.total_bytes ?? 1;
                 const label = c.hostname || c.mac_address;
+                const isRealMac = c.mac_address !== 'unknown' && c.mac_address !== 'other';
                 return (
-                  <div key={c.mac_address} className="grid items-center gap-[10px]" style={{ gridTemplateColumns: '16px 1fr 70px', padding: '5px 0' }}>
+                  <div
+                    key={c.mac_address}
+                    className="grid items-center gap-[10px]"
+                    style={{ gridTemplateColumns: '16px 1fr 70px', padding: '5px 0', cursor: isRealMac ? 'pointer' : 'default' }}
+                    onClick={() => isRealMac && navigate(`/clients/${encodeURIComponent(c.mac_address)}`)}
+                    title={isRealMac ? `${c.mac_address} — open client` : undefined}
+                  >
                     <span className="mono text-[10px] num-tab text-right" style={{ color: 'var(--ink-4)' }}>
                       {String(i + 1).padStart(2, '0')}
                     </span>
@@ -824,11 +840,31 @@ export default function DashboardPage() {
   });
   const clientsOverTime = clientsOverTimeRaw.map(p => ({ ...p, ts: new Date(p.time).getTime() }));
 
-  const { data: topClients = [] } = useQuery({
+  // Top talkers: prefer NetFlow data (same source as the Traffic page) so the
+  // numbers match everywhere; fall back to the device-reported per-connection
+  // counters when the collector has no data (e.g. NetFlow disabled).
+  const { data: netflowTopClients = [], isLoading: netflowTopLoading } = useQuery({
+    queryKey: ['traffic-top-clients', '24h', 8],
+    queryFn: () => trafficApi.topClients('24h', 8).then(r => r.data),
+    refetchInterval: 60_000,
+  });
+  const usingNetflowTop = netflowTopClients.length > 0;
+  const { data: counterTopClients = [] } = useQuery({
     queryKey: ['top-clients'],
     queryFn: () => metricsApi.topClients(8).then(r => r.data),
     refetchInterval: 60_000,
+    enabled: !netflowTopLoading && !usingNetflowTop,
   });
+  const topClients = usingNetflowTop
+    ? netflowTopClients.map((c) => ({
+        mac_address: c.mac,
+        hostname:
+          c.mac === 'unknown' ? 'Unattributed (local)'
+          : c.mac === 'other' ? 'Other clients'
+          : c.custom_name || c.hostname || c.vendor || undefined,
+        total_bytes: c.total_bytes,
+      }))
+    : counterTopClients;
 
   const { data: wirelessClientsData } = useQuery({
     queryKey: ['wireless-clients-active'],
@@ -994,6 +1030,7 @@ export default function DashboardPage() {
           chartRange={chartRange}
           setChartRange={setChartRange}
           topClients={topClients}
+          usingNetflowTop={usingNetflowTop}
           recentEvents={recentEvents}
           severities={severities}
           toggleSeverity={toggleSeverity}
