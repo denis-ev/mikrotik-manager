@@ -589,7 +589,7 @@ const APP_COLORS = [
 ];
 
 function AppTrafficCard({ mac }: { mac: string }) {
-  const [range, setRange] = useState<'1h' | '24h' | '7d' | '30d'>('24h');
+  const [range, setRange] = useState<'2h' | '24h' | '7d'>('24h');
 
   const { data, isLoading } = useQuery({
     queryKey: ['client-app-traffic', mac, range],
@@ -600,22 +600,27 @@ function AppTrafficCard({ mac }: { mac: string }) {
   const series = data?.series ?? [];
   const apps = data?.apps ?? [];
 
-  // NetFlow data only exists for clients on networks with export enabled —
-  // hide the card entirely rather than showing a permanently empty chart.
-  if (!isLoading && series.length === 0 && apps.length === 0) return null;
+  // NetFlow data only exists for clients on networks with export enabled. Latch
+  // on the first non-empty result so the card stays mounted once it has shown
+  // data — otherwise switching to a range with no traffic (e.g. an idle client
+  // over the last 2h) would unmount the whole card, range buttons and all.
+  // Setting state during render (guarded) is React's recommended way to derive
+  // sticky state without an effect.
+  const [hadData, setHadData] = useState(false);
+  if (!hadData && (series.length > 0 || apps.length > 0)) setHadData(true);
+  if (!isLoading && series.length === 0 && apps.length === 0 && !hadData) return null;
 
   const ranges = [
-    { value: '1h', label: '1h' },
+    { value: '2h', label: '2h' },
     { value: '24h', label: '24h' },
     { value: '7d', label: '7d' },
-    { value: '30d', label: '30d' },
   ] as const;
 
   const chartData = series.map(p => ({
     time: p.time,
     Upload: p.upload,
     Download: p.download,
-    label: format(parseISO(p.time), range === '7d' || range === '30d' ? 'MMM d HH:mm' : 'HH:mm'),
+    label: format(parseISO(p.time), range === '7d' ? 'MMM d HH:mm' : 'HH:mm'),
   }));
 
   const totalAppBytes = apps.reduce((s, a) => s + a.bytes, 0);
@@ -648,6 +653,11 @@ function AppTrafficCard({ mac }: { mac: string }) {
 
       {isLoading ? (
         <div className="h-48 bg-gray-100 dark:bg-slate-700/40 rounded animate-pulse" />
+      ) : chartData.length === 0 && apps.length === 0 ? (
+        <div className="h-48 flex flex-col items-center justify-center gap-2 text-gray-400 dark:text-slate-500 text-xs bg-gray-50 dark:bg-slate-800/50 rounded">
+          <Activity className="w-6 h-6 opacity-30" />
+          No traffic data yet for this range
+        </div>
       ) : (
         <>
           {chartData.length > 0 && (

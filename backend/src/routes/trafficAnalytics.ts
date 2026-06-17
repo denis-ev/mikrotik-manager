@@ -8,7 +8,7 @@ const router = Router();
 router.use(requireAuth);
 
 function rangeToFlux(range: string): string {
-  const allowed = ['1h', '3h', '6h', '12h', '24h', '7d', '30d'];
+  const allowed = ['1h', '2h', '3h', '6h', '12h', '24h', '7d', '30d'];
   return allowed.includes(range) ? range : '24h';
 }
 
@@ -16,7 +16,7 @@ function rangeToFlux(range: string): string {
 // written every 60s by the collector flush).
 function windowForRange(range: string): string {
   const map: Record<string, string> = {
-    '1h': '1m', '3h': '5m', '6h': '5m', '12h': '10m',
+    '1h': '1m', '2h': '2m', '3h': '5m', '6h': '5m', '12h': '10m',
     '24h': '15m', '7d': '1h', '30d': '6h',
   };
   return map[range] || '15m';
