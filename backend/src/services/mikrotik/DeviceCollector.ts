@@ -1824,6 +1824,13 @@ export class DeviceCollector {
     return this.client.execute('/ip/firewall/connection/print', { detail: '' }).catch(() => [] as Record<string, string>[]);
   }
 
+  // /ip/firewall/connection/tracking holds the global conntrack state. `enabled`
+  // is yes / no / auto (auto = on only once firewall/NAT/mangle rules exist).
+  async getConnectionTracking(): Promise<Record<string, string>> {
+    const rows = await this.client.execute('/ip/firewall/connection/tracking/print', {}).catch(() => [] as Record<string, string>[]);
+    return rows[0] || {};
+  }
+
   // ─── Simple Queues (per-client / per-subnet bandwidth control) ──────────────
 
   async getSimpleQueues(): Promise<Record<string, string>[]> {

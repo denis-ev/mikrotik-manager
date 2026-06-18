@@ -83,7 +83,7 @@ function NavItem({
         )
       }
     >
-      <Icon className="w-[15px] h-[15px] flex-shrink-0" />
+      <Icon className="w-[17px] h-[17px] flex-shrink-0" />
       <span className={clsx(isCollapsed && 'md:hidden')}>{label}</span>
     </NavLink>
   );
@@ -110,7 +110,7 @@ function GroupHeader({
         isActive ? 'text-accent' : 'text-ink-2 hover:bg-surface-3 hover:text-ink'
       )}
     >
-      <Icon className="w-[15px] h-[15px] flex-shrink-0" />
+      <Icon className="w-[17px] h-[17px] flex-shrink-0" />
       <span className="flex-1 text-left">{label}</span>
       <ChevronDown className={clsx('w-3.5 h-3.5 transition-transform', isOpen ? 'rotate-0' : '-rotate-90')} />
     </button>
@@ -176,14 +176,11 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
         )}
         style={{ borderColor: 'var(--line)' }}
       >
-        <div
-          className="w-[30px] h-[30px] rounded-[7px] flex items-center justify-center flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg, var(--accent), var(--accent-2))' }}
-        >
-          <Network className="w-4 h-4" style={{ color: 'var(--accent-fg)' }} />
-        </div>
+        {/* Theme-aware logo: light-tile icon in light mode, navy-tile icon in dark mode */}
+        <img src="/logo-light.svg" alt="MikroTik Manager" className="w-[45px] h-[45px] flex-shrink-0 block dark:hidden" />
+        <img src="/logo-dark.svg" alt="MikroTik Manager" className="w-[45px] h-[45px] flex-shrink-0 hidden dark:block" />
         <div className={clsx(isCollapsed && 'md:hidden')}>
-          <div className="text-[14px] font-semibold leading-none" style={{ color: 'var(--ink)' }}>Mikrotik Manager</div>
+          <div className="text-[14px] font-semibold leading-none" style={{ color: 'var(--ink)' }}>MikroTik Manager</div>
           <div className="text-[11px] leading-none mt-[3px]" style={{ color: 'var(--ink-3)' }}>{APP_VERSION}</div>
         </div>
         <button
@@ -222,7 +219,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
                 )
               }
             >
-              <Layers className="w-[15px] h-[15px] flex-shrink-0" />
+              <Layers className="w-[17px] h-[17px] flex-shrink-0" />
             </NavLink>
           ) : (
             <>
@@ -260,7 +257,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
                 )
               }
             >
-              <Router className="w-[15px] h-[15px] flex-shrink-0" />
+              <Router className="w-[17px] h-[17px] flex-shrink-0" />
             </NavLink>
           ) : (
             <>
@@ -298,7 +295,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
                 )
               }
             >
-              <Wifi className="w-[15px] h-[15px] flex-shrink-0" />
+              <Wifi className="w-[17px] h-[17px] flex-shrink-0" />
             </NavLink>
           ) : (
             <>
@@ -337,7 +334,7 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
                 )
               }
             >
-              <Network className="w-[15px] h-[15px] flex-shrink-0" />
+              <Network className="w-[17px] h-[17px] flex-shrink-0" />
             </NavLink>
           ) : (
             <>
@@ -405,9 +402,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           style={{ color: 'var(--ink-4)' }}
         >
           {isCollapsed ? (
-            <ChevronRight className="w-[15px] h-[15px] flex-shrink-0" />
+            <ChevronRight className="w-[17px] h-[17px] flex-shrink-0" />
           ) : (
-            <><ChevronLeft className="w-[15px] h-[15px] flex-shrink-0" />Collapse</>
+            <><ChevronLeft className="w-[17px] h-[17px] flex-shrink-0" />Collapse</>
           )}
         </button>
       </div>

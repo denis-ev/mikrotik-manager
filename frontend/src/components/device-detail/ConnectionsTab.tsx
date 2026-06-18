@@ -31,6 +31,20 @@ export default function ConnectionsTab({ deviceId }: { deviceId: number }) {
   const q = search.trim().toLowerCase();
   const rows = q ? all.filter(c => JSON.stringify(c).toLowerCase().includes(q)) : all;
 
+  // Conntrack state: yes / no / auto (auto = active only once firewall/NAT rules exist).
+  const tracking = (data?.tracking?.enabled ?? '').toLowerCase();
+  const trackLabel = tracking === 'yes' ? 'on' : tracking === 'auto' ? 'auto' : tracking === 'no' ? 'off' : '';
+  const trackStyle = tracking === 'yes'
+    ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+    : tracking === 'no'
+    ? 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400'
+    : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400';
+  const emptyMessage = tracking === 'no'
+    ? 'Connection tracking is disabled on this device, so no connections are recorded. Enable it (or add a firewall/NAT rule) to populate this table.'
+    : tracking === 'auto'
+    ? 'Connection tracking is in auto mode — RouterOS only tracks connections once the device has firewall/NAT/mangle rules. This device has none yet, so the table is empty. It also won’t show hardware-switched (L2) traffic, only what the CPU routes/firewalls.'
+    : 'No active connections. Only CPU-processed (routed/firewalled) traffic is tracked — hardware-switched L2 traffic bypasses connection tracking.';
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -39,6 +53,12 @@ export default function ConnectionsTab({ deviceId }: { deviceId: number }) {
           <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
             Active Connections <span className="text-gray-400 font-normal">({total}{total > all.length ? `, showing ${all.length}` : ''})</span>
           </h3>
+          {trackLabel && (
+            <span className={clsx('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium', trackStyle)}
+              title={tracking === 'auto' ? 'Auto: tracking activates only when the device has firewall/NAT rules' : tracking === 'no' ? 'Connection tracking is disabled' : 'Connection tracking is active'}>
+              Tracking: {trackLabel}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="relative">
@@ -54,7 +74,7 @@ export default function ConnectionsTab({ deviceId }: { deviceId: number }) {
       {isLoading ? (
         <div className="text-center py-8 text-gray-400"><RefreshCw className="w-4 h-4 animate-spin inline mr-2" />Loading connections…</div>
       ) : rows.length === 0 ? (
-        <div className="card p-8 text-center text-gray-400">{all.length === 0 ? 'No active connections (connection tracking may be disabled).' : 'No connections match your filter.'}</div>
+        <div className="card p-8 text-center text-gray-400 max-w-2xl mx-auto text-sm">{all.length === 0 ? emptyMessage : 'No connections match your filter.'}</div>
       ) : (
         <div className="card overflow-hidden overflow-x-auto">
           <table className="w-full text-sm">

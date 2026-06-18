@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState, useRef, useEffect } from 'react';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Search, Wifi, Network, Users, X, Pencil, Trash2, ChevronUp, ChevronDown, ChevronsUpDown, RefreshCw } from 'lucide-react';
 import { clientsApi } from '../services/api';
@@ -147,18 +147,24 @@ export default function ClientsPage() {
     localStorage.setItem(STORAGE_KEY, String(val));
   };
 
+  // Sorting is server-side (across the whole dataset, not just the current
+  // page), so changing the sort returns to page 1 and refetches.
   const toggleSort = (col: string) => {
     if (sortCol === col) setSortDir((d) => d === 'asc' ? 'desc' : 'asc');
     else { setSortCol(col); setSortDir('asc'); }
+    setPage(0);
   };
 
   const { data, isLoading } = useQuery({
-    queryKey: ['clients', { search, showAll, page }],
+    queryKey: ['clients', { search, showAll, page, sortCol, sortDir }],
     queryFn: () =>
       clientsApi
-        .list({ search: search || undefined, active: showAll ? undefined : true, limit: PAGE_SIZE, offset: page * PAGE_SIZE })
+        .list({ search: search || undefined, active: showAll ? undefined : true, limit: PAGE_SIZE, offset: page * PAGE_SIZE, sort: sortCol, dir: sortDir })
         .then((r) => r.data),
     refetchInterval: refreshInterval ?? false,
+    // Keep the current rows on screen while a sort/page/search refetch is in
+    // flight so the table doesn't blank out and jump.
+    placeholderData: keepPreviousData,
   });
 
   const [purgeResult, setPurgeResult] = useState('');
@@ -179,32 +185,9 @@ export default function ClientsPage() {
     },
   });
 
-  const rawClients = data?.clients ?? [];
+  // Server returns rows already sorted + paginated for the active sort column.
+  const clients = data?.clients ?? [];
   const total = data?.total ?? 0;
-
-  const clients = useMemo(() => {
-    const toIpNum = (ip: string) =>
-      (ip || '').split('.').reduce((n, o) => n * 256 + parseInt(o || '0', 10), 0);
-
-    return [...rawClients].sort((a, b) => {
-      let av: string | number, bv: string | number;
-      switch (sortCol) {
-        case 'hostname':       av = a.custom_name || a.hostname || ''; bv = b.custom_name || b.hostname || ''; break;
-        case 'vendor':         av = a.vendor || ''; bv = b.vendor || ''; break;
-        case 'ip_address':     av = toIpNum(a.ip_address || ''); bv = toIpNum(b.ip_address || ''); break;
-        case 'client_type':    av = a.client_type || ''; bv = b.client_type || ''; break;
-        case 'interface_name': av = a.interface_name || ''; bv = b.interface_name || ''; break;
-        case 'vlan_id':        av = a.vlan_id ?? -1; bv = b.vlan_id ?? -1; break;
-        case 'device_name':    av = a.device_name || ''; bv = b.device_name || ''; break;
-        case 'traffic_today_bytes': av = a.traffic_today_bytes ?? 0; bv = b.traffic_today_bytes ?? 0; break;
-        case 'last_seen':      av = a.last_seen || ''; bv = b.last_seen || ''; break;
-        default:               av = ''; bv = '';
-      }
-      if (av === bv) return 0;
-      const cmp = av < bv ? -1 : 1;
-      return sortDir === 'asc' ? cmp : -cmp;
-    });
-  }, [rawClients, sortCol, sortDir]);
 
   return (
     <div className="space-y-4">
@@ -296,7 +279,18 @@ export default function ClientsPage() {
         <>
           <div className="card overflow-hidden">
             <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm table-fixed">
+              <colgroup>
+                <col style={{ width: '22%' }} />
+                <col style={{ width: '12%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '11%' }} />
+                <col style={{ width: '7%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '10%' }} />
+                <col style={{ width: '12%' }} />
+                {showAll && <col style={{ width: '6%' }} />}
+              </colgroup>
               <thead>
                 <tr className="border-b border-gray-200 dark:border-slate-700">
                   {([
@@ -338,22 +332,22 @@ export default function ClientsPage() {
                     className="hover:bg-gray-50 dark:hover:bg-slate-700/30"
                   >
                     <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 min-w-0">
                         <button
                           onClick={() => navigate(`/clients/${encodeURIComponent(client.mac_address)}`)}
-                          className="font-medium text-blue-600 dark:text-blue-400 hover:underline text-left"
+                          className="font-medium text-blue-600 dark:text-blue-400 hover:underline text-left truncate"
                         >
                           {client.custom_name || client.hostname || (
                             <span className="text-gray-400 dark:text-slate-500 italic">No hostname</span>
                           )}
                         </button>
                         {client.custom_name && (
-                          <span className="text-xs text-blue-500 dark:text-blue-400 ml-1">custom</span>
+                          <span className="text-xs text-blue-500 dark:text-blue-400 ml-1 flex-shrink-0">custom</span>
                         )}
                         {canWrite && (
                           <button
                             onClick={(e) => { e.stopPropagation(); setEditingClient(client); }}
-                            className="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-slate-700"
+                            className="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-slate-700 flex-shrink-0"
                             title="Edit name"
                           >
                             <Pencil className="w-3 h-3 text-gray-300 dark:text-slate-600 hover:text-gray-500 dark:hover:text-slate-400" />
@@ -361,13 +355,13 @@ export default function ClientsPage() {
                         )}
                       </div>
                       {client.vendor && (
-                        <div className="text-xs text-gray-400 dark:text-slate-500">{client.vendor}</div>
+                        <div className="text-xs text-gray-400 dark:text-slate-500 truncate">{client.vendor}</div>
                       )}
-                      <div className="text-xs font-mono text-gray-400 dark:text-slate-500">
+                      <div className="text-xs font-mono text-gray-400 dark:text-slate-500 truncate">
                         {client.mac_address}
                       </div>
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-gray-600 dark:text-slate-400">
+                    <td className="px-4 py-2.5 font-mono text-gray-600 dark:text-slate-400 truncate">
                       {client.ip_address || '—'}
                     </td>
                     <td className="px-4 py-2.5">
@@ -390,7 +384,7 @@ export default function ClientsPage() {
                         )}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400">
+                    <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400 truncate">
                       {client.interface_name || '—'}
                     </td>
                     <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400">
@@ -398,7 +392,7 @@ export default function ClientsPage() {
                         ? <span className="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded font-mono">{client.vlan_id}</span>
                         : '—'}
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400">
+                    <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400 truncate">
                       {client.device_name || '—'}
                     </td>
                     <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400 whitespace-nowrap">

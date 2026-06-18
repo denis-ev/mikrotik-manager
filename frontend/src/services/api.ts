@@ -261,7 +261,7 @@ export const devicesApi = {
     api.delete(`/devices/${id}/address-lists/${encodeURIComponent(entryId)}`),
   // Active connections (read-only)
   getConnections: (id: number, limit = 500) =>
-    api.get<{ total: number; connections: Record<string, string>[] }>(`/devices/${id}/connections`, { params: { limit } }),
+    api.get<{ total: number; connections: Record<string, string>[]; tracking: Record<string, string> }>(`/devices/${id}/connections`, { params: { limit } }),
   // Simple queues (bandwidth control)
   getQueues: (id: number) => api.get<Record<string, string>[]>(`/devices/${id}/queues`),
   addQueue: (id: number, data: Record<string, unknown>) =>
@@ -350,6 +350,8 @@ export const clientsApi = {
     client_type?: string;
     limit?: number;
     offset?: number;
+    sort?: string;
+    dir?: 'asc' | 'desc';
   }) =>
     api.get<{ clients: Client[]; total: number }>('/clients', { params }),
   get: (mac: string) => api.get<ClientDetail>(`/clients/${mac}`),

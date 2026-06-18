@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 # Claude Code session files
 .claude/
+
+# macOS
+.DS_Store

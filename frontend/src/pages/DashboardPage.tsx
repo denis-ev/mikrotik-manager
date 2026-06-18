@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
   Users, AlertTriangle, Wifi, MapPin, ArrowUpCircle, Cpu, X,
@@ -256,6 +256,19 @@ function HealthBar({
 
 // ─── Summary View ─────────────────────────────────────────────────────────────
 
+// Cap the number of bars so they render as readable columns instead of hairline
+// slivers on dense ranges. Strides through the series (a point-in-time client
+// gauge, so sampling preserves the trend) and always keeps the latest point.
+function downsample<T>(arr: T[], max: number): T[] {
+  if (arr.length <= max) return arr;
+  const step = Math.ceil(arr.length / max);
+  const out: T[] = [];
+  for (let i = 0; i < arr.length; i += step) out.push(arr[i]);
+  const last = arr[arr.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function SummaryView(props: Record<string, any>) {
   const { summary, devices, wirelessCount, clientSparkline, clientsOverTime,
@@ -282,13 +295,11 @@ function SummaryView(props: Record<string, any>) {
     router:      { label: 'Routers',     color: 'var(--violet)' },
   };
 
-  const chartDomain: [number, number] = (() => {
-    const ranges: Record<string, number> = { '1h': 1, '6h': 6, '24h': 24, '7d': 168 };
-    const hrs = ranges[chartRange] ?? 24;
-    // eslint-disable-next-line react-hooks/purity
-    const now = Date.now();
-    return [now - hrs * 60 * 60 * 1000, now];
-  })();
+  // Bars over a category axis fill their slots (thick, minimal gaps) rather than
+  // sitting as thin fixed-width marks on a continuous time axis. Downsample to
+  // keep them chunky even on long ranges.
+  const chartData = downsample(clientsOverTime as { ts: number; value: number }[], 60);
+  const tickEvery = Math.max(0, Math.ceil(chartData.length / 6) - 1);
 
   return (
     <div className="space-y-4">
@@ -335,16 +346,18 @@ function SummaryView(props: Record<string, any>) {
           </div>
           {clientsOverTime.length > 0 ? (
             <ResponsiveContainer width="100%" height={180}>
-              <LineChart data={clientsOverTime} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--line-soft)" />
+              <BarChart data={chartData} margin={{ top: 4, right: 4, left: -24, bottom: 0 }} barCategoryGap="12%">
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line-soft)" vertical={false} />
                 <XAxis
-                  dataKey="ts" type="number" scale="time" domain={chartDomain}
+                  dataKey="ts"
                   tick={{ fontSize: 10, fill: 'var(--ink-4)', fontFamily: 'Geist Mono' }}
-                  tickCount={7}
-                  tickFormatter={(t) => format(new Date(t), 'HH:mm')}
+                  interval={tickEvery}
+                  minTickGap={20}
+                  tickFormatter={(t) => format(new Date(t as number), chartRange === '7d' ? 'MMM d' : 'HH:mm')}
                 />
                 <YAxis tick={{ fontSize: 10, fill: 'var(--ink-4)' }} allowDecimals={false} />
                 <Tooltip
+                  cursor={{ fill: 'var(--surface-3)', opacity: 0.4 }}
                   formatter={(v: number) => [v, 'Clients']}
                   labelFormatter={(t) => format(new Date(t as number), 'MMM d, HH:mm')}
                   contentStyle={{
@@ -355,12 +368,8 @@ function SummaryView(props: Record<string, any>) {
                     color: 'var(--ink)',
                   }}
                 />
-                <Line
-                  type="monotone" dataKey="value"
-                  stroke="var(--accent)" strokeWidth={1.8}
-                  dot={false} activeDot={{ r: 4, fill: 'var(--accent)' }}
-                />
-              </LineChart>
+                <Bar dataKey="value" fill="var(--accent)" radius={[3, 3, 0, 0]} />
+              </BarChart>
             </ResponsiveContainer>
           ) : (
             <div className="flex items-center justify-center text-[13px]" style={{ height: 180, color: 'var(--ink-4)' }}>

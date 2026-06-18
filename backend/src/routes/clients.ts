@@ -13,7 +13,27 @@ export function setPollerService(p: PollerService): void { pollerService = p; }
 
 // GET /api/clients
 router.get('/', async (req: Request, res: Response) => {
-  const { deviceId, active, search, client_type, limit = '100', offset = '0' } = req.query;
+  const { deviceId, active, search, client_type, limit = '100', offset = '0', sort, dir } = req.query;
+
+  // Whitelist sortable columns → safe SQL expressions on the outer (deduped)
+  // result. Sorting must run server-side across the whole dataset, not just the
+  // current page, or column sorts appear to do nothing when a page is uniform.
+  const SORT_EXPR: Record<string, string> = {
+    hostname: `LOWER(COALESCE(NULLIF(deduped.custom_name, ''), deduped.hostname, ''))`,
+    vendor: `LOWER(COALESCE(deduped.vendor, ''))`,
+    // Regex-guard the inet cast so non-IP/empty values can't error; sorts numerically.
+    ip_address: `CASE WHEN deduped.ip_address ~ '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' THEN deduped.ip_address::inet END`,
+    client_type: `deduped.client_type`,
+    interface_name: `LOWER(COALESCE(deduped.interface_name, ''))`,
+    vlan_id: `deduped.vlan_id`,
+    device_name: `LOWER(COALESCE(deduped.device_name, ''))`,
+    traffic_today_bytes: `traffic_today_bytes`,
+    last_seen: `deduped.last_seen`,
+  };
+  const sortExpr = SORT_EXPR[String(sort)] ?? SORT_EXPR.last_seen;
+  const sortDir = String(dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // Stable, predictable: chosen column, then mac as a deterministic tiebreaker.
+  const orderBy = `ORDER BY ${sortExpr} ${sortDir} NULLS LAST, deduped.mac_address ASC`;
 
   // Build WHERE clause shared by both queries
   const filters: string[] = [];
@@ -58,7 +78,7 @@ router.get('/', async (req: Request, res: Response) => {
     ) deduped
     LEFT JOIN client_traffic_daily ctd
       ON ctd.mac_address = LOWER(deduped.mac_address) AND ctd.day = CURRENT_DATE
-    ORDER BY last_seen DESC NULLS LAST
+    ${orderBy}
     LIMIT $${idx++} OFFSET $${idx++}
   `;
   const clients = await query(sql, [...filterParams, parseInt(String(limit), 10), parseInt(String(offset), 10)]);

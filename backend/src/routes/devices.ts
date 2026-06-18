@@ -897,9 +897,9 @@ router.delete('/:id/address-lists/:entryId', requireWrite, async (req, res) => {
 router.get('/:id/connections', async (req, res) => {
   const limit = Math.min(parseInt(String(req.query.limit || '500'), 10) || 500, 2000);
   await withCollector(req.params.id, res, async (c) => {
-    const rows = await c.getConnections();
+    const [rows, tracking] = await Promise.all([c.getConnections(), c.getConnectionTracking()]);
     // Connection tables can be huge; cap and surface the total so the UI can note truncation.
-    return { total: rows.length, connections: rows.slice(0, limit) };
+    return { total: rows.length, connections: rows.slice(0, limit), tracking };
   });
 });
 
