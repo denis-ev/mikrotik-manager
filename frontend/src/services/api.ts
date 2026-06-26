@@ -413,6 +413,36 @@ export const eventsApi = {
 };
 
 // ─── Backups ──────────────────────────────────────────────────────────────────
+// ─── Operations ────────────────────────────────────────────────────────────────
+export interface OpsAttentionItem {
+  sev: 'error' | 'warn' | 'info';
+  category: string;
+  title: string;
+  body: string;
+  action: string;
+  path: string;
+}
+export interface OpsCapacityRow { id: number; name: string; cpu: number; mem_pct: number }
+export interface OpsActivityItem {
+  at: string;
+  kind: 'config' | 'audit' | 'alert';
+  sev?: string;
+  title: string;
+  sub: string;
+}
+export interface OpsInsights {
+  attention: OpsAttentionItem[];
+  capacity: OpsCapacityRow[];
+  activity: OpsActivityItem[];
+}
+export interface OpsActionResult { total: number; results: { name: string; ok: boolean; error?: string }[] }
+
+export const operationsApi = {
+  insights: () => api.get<OpsInsights>('/operations/insights'),
+  backupAll: () => api.post<OpsActionResult>('/operations/backup-all', undefined, { timeout: 180_000 }),
+  syncAll: () => api.post<OpsActionResult>('/operations/sync-all', undefined, { timeout: 180_000 }),
+};
+
 export const backupsApi = {
   list: (deviceId?: number) =>
     api.get<Backup[]>('/backups', { params: deviceId ? { deviceId } : {} }),

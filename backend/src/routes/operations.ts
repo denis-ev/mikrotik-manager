@@ -1,0 +1,348 @@
+import { Router, Request, Response } from 'express';
+import { query } from '../config/database';
+import { getQueryApi } from '../config/influxdb';
+import { requireAuth, requireWrite } from '../middleware/auth';
+import { DeviceCollector, DeviceRow } from '../services/mikrotik/DeviceCollector';
+import { BackupService, BackupDevice } from '../services/BackupService';
+
+const router = Router();
+router.use(requireAuth);
+
+const backupService = new BackupService();
+
+const bucket = process.env.INFLUXDB_BUCKET || 'mikrotik';
+
+type Sev = 'error' | 'warn' | 'info';
+interface AttentionItem {
+  sev: Sev; category: string; title: string; body: string; action: string; path: string;
+}
+
+// Latest value per device for a set of device_resources fields.
+async function latestResources(): Promise<Map<string, { cpu: number; memTotal: number; memUsed: number }>> {
+  const out = new Map<string, { cpu: number; memTotal: number; memUsed: number }>();
+  const flux = `
+    from(bucket: "${bucket}")
+      |> range(start: -15m)
+      |> filter(fn: (r) => r["_measurement"] == "device_resources")
+      |> filter(fn: (r) => r["_field"] == "cpu_load" or r["_field"] == "memory_total" or r["_field"] == "memory_used")
+      |> group(columns: ["device_id", "_field"])
+      |> last()
+  `;
+  try {
+    const api = getQueryApi();
+    await new Promise<void>((resolve, reject) => {
+      api.queryRows(flux, {
+        next(row, tableMeta) {
+          const o = tableMeta.toObject(row) as Record<string, unknown>;
+          const id = String(o['device_id'] || '');
+          const field = String(o['_field'] || '');
+          const val = Number(o['_value']) || 0;
+          const e = out.get(id) || { cpu: 0, memTotal: 0, memUsed: 0 };
+          if (field === 'cpu_load') e.cpu = val;
+          else if (field === 'memory_total') e.memTotal = val;
+          else if (field === 'memory_used') e.memUsed = val;
+          out.set(id, e);
+        },
+        error: reject,
+        complete: resolve,
+      });
+    });
+  } catch { /* influx unavailable → empty */ }
+  return out;
+}
+
+// Latest TX-retry % per radio (from the RF Health series).
+async function latestRetries(): Promise<{ device_id: string; device_name: string; interface: string; pct: number }[]> {
+  const rows: { device_id: string; device_name: string; interface: string; pct: number }[] = [];
+  const flux = `
+    from(bucket: "${bucket}")
+      |> range(start: -1h)
+      |> filter(fn: (r) => r["_measurement"] == "wireless_radio_quality")
+      |> filter(fn: (r) => r["_field"] == "tx_retry_pct")
+      |> group(columns: ["device_id", "device_name", "interface"])
+      |> last()
+  `;
+  try {
+    const api = getQueryApi();
+    await new Promise<void>((resolve, reject) => {
+      api.queryRows(flux, {
+        next(row, tableMeta) {
+          const o = tableMeta.toObject(row) as Record<string, unknown>;
+          rows.push({
+            device_id: String(o['device_id'] || ''),
+            device_name: String(o['device_name'] || ''),
+            interface: String(o['interface'] || ''),
+            pct: Number(o['_value']) || 0,
+          });
+        },
+        error: reject,
+        complete: resolve,
+      });
+    });
+  } catch { /* ignore */ }
+  return rows;
+}
+
+// GET /api/operations/insights — aggregated operational intelligence (no live
+// device connections; all from Postgres + InfluxDB so it's fast).
+router.get('/insights', async (_req: Request, res: Response) => {
+  const [
+    devices, missingBackup, recentOutages, weakWifi, coChannel, eventCounts,
+  ] = await Promise.all([
+    query<{
+      id: number; name: string; status: string; last_seen: string | null;
+      device_type: string; ros_version: string | null;
+      firmware_update_available: boolean; latest_ros_version: string | null;
+      routerboard_upgrade_available: boolean; firmware_version: string | null;
+      upgrade_firmware_version: string | null;
+    }>(`SELECT id, name, status, last_seen, device_type, ros_version,
+               firmware_update_available, latest_ros_version,
+               routerboard_upgrade_available, firmware_version, upgrade_firmware_version
+        FROM devices`),
+    query<{ id: number; name: string; last_backup: string | null }>(`
+      SELECT d.id, d.name, MAX(b.created_at) AS last_backup
+      FROM devices d LEFT JOIN backups b ON b.device_id = d.id
+      GROUP BY d.id
+      HAVING MAX(b.created_at) IS NULL OR MAX(b.created_at) < NOW() - INTERVAL '7 days'`),
+    query<{ device_id: number; name: string; outages: string }>(`
+      SELECT a.device_id, d.name, COUNT(*) AS outages
+      FROM device_availability a JOIN devices d ON d.id = a.device_id
+      WHERE a.went_offline_at > NOW() - INTERVAL '7 days'
+      GROUP BY a.device_id, d.name`),
+    query<{ count: string }>(`
+      SELECT COUNT(*) AS count FROM clients
+      WHERE active = TRUE AND client_type = 'wireless'
+        AND signal_strength IS NOT NULL AND signal_strength < -75`),
+    query<{ frequency: number; radios: string }>(`
+      SELECT frequency, COUNT(*) AS radios FROM wireless_interfaces
+      WHERE disabled = FALSE AND frequency IS NOT NULL AND frequency > 0
+        AND (config_json->>'master-interface') IS NULL
+      GROUP BY frequency HAVING COUNT(*) > 1`),
+    query<{ errors: string; warnings: string }>(`
+      SELECT COUNT(*) FILTER (WHERE severity = 'error')   AS errors,
+             COUNT(*) FILTER (WHERE severity = 'warning') AS warnings
+      FROM events WHERE event_time > NOW() - INTERVAL '24 hours'`),
+  ]);
+
+  const [resources, retries] = await Promise.all([latestResources(), latestRetries()]);
+
+  const attention: AttentionItem[] = [];
+
+  for (const d of devices) {
+    if (d.status === 'offline') {
+      attention.push({
+        sev: 'error', category: 'availability',
+        title: `${d.name} is unreachable`,
+        body: `Last seen ${d.last_seen ? timeAgo(d.last_seen) : 'never'}.`,
+        action: 'View device', path: `/devices/${d.id}`,
+      });
+    }
+  }
+  for (const d of devices) {
+    if (d.firmware_update_available) {
+      attention.push({
+        sev: 'warn', category: 'updates',
+        title: `RouterOS update available for ${d.name}`,
+        body: `Running ${d.ros_version}${d.latest_ros_version ? `, ${d.latest_ros_version} available` : ''}.`,
+        action: 'Review update', path: `/devices/${d.id}?tab=config`,
+      });
+    }
+    if (d.routerboard_upgrade_available) {
+      attention.push({
+        sev: 'info', category: 'updates',
+        title: `RouterBOOT upgrade available for ${d.name}`,
+        body: `Firmware ${d.firmware_version}${d.upgrade_firmware_version ? ` → ${d.upgrade_firmware_version}` : ''}.`,
+        action: 'Review upgrade', path: `/devices/${d.id}?tab=config`,
+      });
+    }
+  }
+
+  // Capacity pressure (CPU / memory)
+  const capacity: { id: number; name: string; cpu: number; mem_pct: number }[] = [];
+  for (const d of devices) {
+    const r = resources.get(String(d.id));
+    if (!r) continue;
+    const memPct = r.memTotal > 0 ? Math.round((r.memUsed / r.memTotal) * 100) : 0;
+    capacity.push({ id: d.id, name: d.name, cpu: Math.round(r.cpu), mem_pct: memPct });
+    if (r.cpu >= 85) {
+      attention.push({
+        sev: 'warn', category: 'capacity',
+        title: `${d.name} CPU is high (${Math.round(r.cpu)}%)`,
+        body: 'Sustained high CPU can drop management responsiveness and routing throughput.',
+        action: 'View device', path: `/devices/${d.id}`,
+      });
+    }
+    if (memPct >= 90) {
+      attention.push({
+        sev: 'warn', category: 'capacity',
+        title: `${d.name} memory is high (${memPct}%)`,
+        body: 'Low free memory risks instability; check for leaks or oversized tables.',
+        action: 'View device', path: `/devices/${d.id}`,
+      });
+    }
+  }
+
+  // Backups
+  for (const b of missingBackup) {
+    attention.push({
+      sev: 'warn', category: 'backups',
+      title: `${b.name} has no recent backup`,
+      body: b.last_backup ? `Last backup ${timeAgo(b.last_backup)}.` : 'No backup has ever been taken.',
+      action: 'Back up', path: '/backups',
+    });
+  }
+
+  // Reliability — recent outages (device still online now, but flapped)
+  for (const o of recentOutages) {
+    const dev = devices.find(d => d.id === o.device_id);
+    if (dev && dev.status === 'offline') continue; // already covered by the offline item
+    attention.push({
+      sev: 'info', category: 'reliability',
+      title: `${o.name} had ${o.outages} outage${Number(o.outages) !== 1 ? 's' : ''} this week`,
+      body: 'Recent connectivity flapping — worth checking power, uplink, or PoE.',
+      action: 'View device', path: `/devices/${o.device_id}`,
+    });
+  }
+
+  // WiFi — weak clients
+  const weakCount = parseInt(weakWifi[0]?.count || '0', 10);
+  if (weakCount > 0) {
+    attention.push({
+      sev: 'warn', category: 'wifi',
+      title: `${weakCount} wireless client${weakCount !== 1 ? 's' : ''} on weak signal`,
+      body: 'Clients connected below −75 dBm — likely coverage gaps or far-roaming devices.',
+      action: 'Open Wireless', path: '/wireless',
+    });
+  }
+
+  // WiFi — co-channel overlap
+  if (coChannel.length > 0) {
+    const chans = coChannel.map(c => freqToChannel(c.frequency)).filter(Boolean);
+    attention.push({
+      sev: 'warn', category: 'wifi',
+      title: `Co-channel overlap on ${coChannel.length} channel${coChannel.length !== 1 ? 's' : ''}`,
+      body: `Multiple radios share channel${chans.length ? ` ${chans.join(', ')}` : ''}. Overlapping cells reduce airtime — re-plan channels.`,
+      action: 'Open Wireless', path: '/wireless',
+    });
+  }
+
+  // WiFi — high TX retries
+  const badRetries = retries.filter(r => r.pct >= 15);
+  for (const r of badRetries) {
+    attention.push({
+      sev: 'warn', category: 'wifi',
+      title: `High TX retries on ${r.device_name} (${r.interface})`,
+      body: `${r.pct.toFixed(0)}% transmit retries — interference or weak clients on this radio.`,
+      action: 'Open Wireless', path: '/wireless',
+    });
+  }
+
+  // Recent error events
+  const errCount = parseInt(eventCounts[0]?.errors || '0', 10);
+  if (errCount > 0) {
+    attention.push({
+      sev: 'info', category: 'events',
+      title: `${errCount} error-level event${errCount !== 1 ? 's' : ''} in the last 24h`,
+      body: 'Recent error logs across the fleet may need a look.',
+      action: 'Open Events', path: '/events',
+    });
+  }
+
+  // Severity ordering: error → warn → info
+  const sevRank: Record<Sev, number> = { error: 0, warn: 1, info: 2 };
+  attention.sort((a, b) => sevRank[a.sev] - sevRank[b.sev]);
+
+  // Activity feed — recent config changes, user actions, and notable events
+  const activity = await buildActivity();
+
+  res.json({ attention, capacity, activity });
+});
+
+// Recent activity merged from config snapshots, audit log, and events.
+async function buildActivity() {
+  const [configs, audits, events] = await Promise.all([
+    query<{ at: string; name: string; summary: string | null }>(`
+      SELECT dc.collected_at AS at, d.name, dc.change_summary AS summary
+      FROM device_configs dc JOIN devices d ON d.id = dc.device_id
+      WHERE dc.change_summary IS NOT NULL AND dc.change_summary != ''
+      ORDER BY dc.collected_at DESC LIMIT 8`),
+    query<{ at: string; username: string | null; method: string; summary: string | null }>(`
+      SELECT created_at AS at, username, method, summary
+      FROM audit_log
+      WHERE method <> 'GET' AND status_code < 400
+        AND path NOT ILIKE '%login%' AND path NOT ILIKE '%logout%' AND path NOT ILIKE '%/auth/%'
+      ORDER BY created_at DESC LIMIT 8`),
+    query<{ at: string; severity: string; message: string; name: string | null }>(`
+      SELECT e.event_time AS at, e.severity, e.message, d.name
+      FROM events e LEFT JOIN devices d ON d.id = e.device_id
+      WHERE e.severity IN ('error', 'warning')
+      ORDER BY e.event_time DESC LIMIT 8`),
+  ]);
+
+  type Act = { at: string; kind: 'config' | 'audit' | 'alert'; sev?: string; title: string; sub: string };
+  const items: Act[] = [];
+  for (const c of configs) items.push({ at: c.at, kind: 'config', title: c.summary || 'Configuration changed', sub: c.name });
+  for (const a of audits) items.push({ at: a.at, kind: 'audit', title: a.summary || `${a.method} request`, sub: a.username || 'system' });
+  for (const e of events) items.push({ at: e.at, kind: 'alert', sev: e.severity, title: e.message, sub: e.name || 'fleet' });
+  items.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  return items.slice(0, 14);
+}
+
+// POST /api/operations/backup-all — back up every online device (parallel, best-effort)
+router.post('/backup-all', requireWrite, async (_req: Request, res: Response) => {
+  const devices = await query<DeviceRow>(`SELECT * FROM devices WHERE status = 'online'`);
+  const settled = await Promise.allSettled(devices.map(d => {
+    const dev: BackupDevice = {
+      id: d.id, name: d.name, ip_address: d.ip_address,
+      ssh_port: d.ssh_port ?? 22, ssh_username: d.ssh_username,
+      ssh_password_encrypted: d.ssh_password_encrypted,
+      api_username: d.api_username, api_password_encrypted: d.api_password_encrypted,
+    };
+    return backupService.createBackup(dev, 'Operations: backup all');
+  }));
+  res.json({
+    total: devices.length,
+    results: settled.map((s, i) => ({
+      name: devices[i].name,
+      ok: s.status === 'fulfilled',
+      error: s.status === 'rejected' ? (s.reason as Error)?.message : undefined,
+    })),
+  });
+});
+
+// POST /api/operations/sync-all — pull latest config/state from every online device
+router.post('/sync-all', requireWrite, async (_req: Request, res: Response) => {
+  const devices = await query<DeviceRow>(`SELECT * FROM devices WHERE status = 'online'`);
+  const settled = await Promise.allSettled(devices.map(async (d) => {
+    const c = new DeviceCollector(d);
+    try { await c.connect(); await c.collectAll(); }
+    finally { c.disconnect(); }
+  }));
+  res.json({
+    total: devices.length,
+    results: settled.map((s, i) => ({
+      name: devices[i].name,
+      ok: s.status === 'fulfilled',
+      error: s.status === 'rejected' ? (s.reason as Error)?.message : undefined,
+    })),
+  });
+});
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+function timeAgo(ts: string): string {
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function freqToChannel(freq: number): number | null {
+  if (freq >= 2400 && freq < 2500) return freq === 2484 ? 14 : Math.round((freq - 2407) / 5);
+  if (freq >= 4900 && freq < 5925) return Math.round((freq - 5000) / 5);
+  if (freq >= 5925 && freq <= 7125) return Math.round((freq - 5950) / 5);
+  return null;
+}
+
+export default router;

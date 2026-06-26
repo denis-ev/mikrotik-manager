@@ -89,7 +89,7 @@ export default function GlobalSearch() {
     setQuery('');
     setResults(null);
     if (kind === 'device') navigate(`/devices/${id}`);
-    else if (kind === 'client') navigate('/clients');
+    else if (kind === 'client') navigate(`/clients/${encodeURIComponent(String(id))}`);
     else navigate('/events');
   }, [navigate]);
 

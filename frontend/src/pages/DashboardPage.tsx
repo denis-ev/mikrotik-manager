@@ -7,10 +7,13 @@ import {
 import {
   Users, AlertTriangle, Wifi, MapPin, ArrowUpCircle, Cpu, X,
   RefreshCw, Terminal, HardDrive, GitBranch, Activity,
+  Shield, Clock, FileText, Bell, ChevronRight, CheckCircle2,
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { metricsApi, eventsApi, devicesApi, clientsApi, trafficApi } from '../services/api';
+import { metricsApi, eventsApi, devicesApi, clientsApi, trafficApi, operationsApi, topologyApi } from '../services/api';
+import type { OpsAttentionItem, OpsCapacityRow, OpsActivityItem } from '../services/api';
+import TerminalModal from '../components/TerminalModal';
 import { useSocket } from '../hooks/useSocket';
 import { useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -588,57 +591,94 @@ function OperationsView({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }) {
+  const qc = useQueryClient();
   const allOnline = (summary?.devices.offline ?? 0) === 0 && (summary?.devices.total ?? 0) > 0;
   const statusText = allOnline ? "Everything's running." : `${summary?.devices.offline} device${summary?.devices.offline !== 1 ? 's' : ''} unreachable.`;
   const statusColor = allOnline ? 'var(--accent)' : 'var(--warn)';
 
-  const thingsToHandle = useMemo(() => {
-    const items: { sev: 'error' | 'warn' | 'info'; title: string; body: string; action: string; path: string }[] = [];
+  const deviceList = devices as Device[];
+  const onlineDevices = deviceList.filter(d => d.status === 'online');
 
-    for (const d of devices as Device[]) {
-      if (d.status === 'offline') {
-        items.push({
-          sev: 'error',
-          title: `${d.name} is unreachable`,
-          body: `Last seen ${d.last_seen ? formatDistanceToNow(new Date(d.last_seen), { addSuffix: true }) : 'never'}.`,
-          action: 'View device',
-          path: `/devices/${d.id}`,
-        });
-      }
-    }
-    for (const d of devices as Device[]) {
-      if (d.firmware_update_available) {
-        items.push({
-          sev: 'warn',
-          title: `RouterOS update available for ${d.name}`,
-          body: `Running ${d.ros_version}${d.latest_ros_version ? `, ${d.latest_ros_version} available` : ''}.`,
-          action: 'Review update',
-          path: `/devices/${d.id}?tab=config`,
-        });
-      }
-      if (d.routerboard_upgrade_available) {
-        items.push({
-          sev: 'info',
-          title: `RouterBOOT upgrade available for ${d.name}`,
-          body: `Firmware ${d.firmware_version}${d.upgrade_firmware_version ? ` → ${d.upgrade_firmware_version}` : ''}.`,
-          action: 'Review upgrade',
-          path: `/devices/${d.id}?tab=config`,
-        });
-      }
-    }
-    return items;
-  }, [devices]);
+  // Server-aggregated operational insights (attention, capacity, activity)
+  const { data: insights } = useQuery({
+    queryKey: ['ops-insights'],
+    queryFn: () => operationsApi.insights().then(r => r.data),
+    refetchInterval: 60_000,
+  });
+  const thingsToHandle: OpsAttentionItem[] = insights?.attention ?? [];
+  const capacity: OpsCapacityRow[] = insights?.capacity ?? [];
+  const activity: OpsActivityItem[] = insights?.activity ?? [];
 
-  const quickActions = [
-    { label: 'Run discovery',  sub: 'Scan ARP / CDP / MNDP', icon: Wifi,      path: '/devices', color: 'var(--accent)' },
-    { label: 'Backup all',     sub: `${(devices as Device[]).length} devices`,  icon: HardDrive,  path: '/backups',  color: 'var(--info)' },
-    { label: 'Open terminal',  sub: 'Pick a device',          icon: Terminal,   path: '/devices', color: 'var(--violet)' },
-    { label: 'Sync config',    sub: 'Pull latest /export',    icon: RefreshCw,  path: '/devices', color: 'var(--ink-2)' },
-    { label: 'Tail events',    sub: 'Live syslog stream',      icon: Activity,   path: '/events',  color: 'var(--ink-2)' },
-    { label: 'Open topology',  sub: 'Visualize links',         icon: GitBranch,  path: '/topology',color: 'var(--ink-2)' },
+  // Fleet security posture rollup (live per-device; cached 5 min, lazy)
+  const { data: posture } = useQuery({
+    queryKey: ['ops-security', onlineDevices.map(d => d.id).join(',')],
+    enabled: onlineDevices.length > 0,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      const settled = await Promise.allSettled(
+        onlineDevices.map(d =>
+          devicesApi.getSecurityPosture(d.id).then(r => ({ id: d.id, name: d.name, score: r.data.score, checks: r.data.checks }))
+        )
+      );
+      return settled.flatMap(s => s.status === 'fulfilled' ? [s.value] : []);
+    },
+  });
+
+  // Action state
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionMsg, setActionMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [pickTerminal, setPickTerminal] = useState(false);
+  const [terminalDevice, setTerminalDevice] = useState<{ id: number; name: string } | null>(null);
+
+  async function runAction(key: string, fn: () => Promise<string>) {
+    setBusy(key); setActionMsg(null);
+    try { setActionMsg({ text: await fn(), ok: true }); }
+    catch (e) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || (e as Error).message || 'Action failed';
+      setActionMsg({ text: msg, ok: false });
+    } finally { setBusy(null); }
+  }
+
+  const actions = [
+    { key: 'discovery', label: 'Run discovery', sub: 'Scan ARP / CDP / MNDP', icon: Wifi, color: 'var(--accent)',
+      run: () => runAction('discovery', async () => {
+        const r = await topologyApi.discover();
+        return (r.data as { message?: string })?.message || 'Discovery triggered';
+      }) },
+    { key: 'backup', label: 'Backup all', sub: `${onlineDevices.length} online`, icon: HardDrive, color: 'var(--info)',
+      run: () => runAction('backup', async () => {
+        const r = await operationsApi.backupAll();
+        const ok = r.data.results.filter(x => x.ok).length;
+        return `Backed up ${ok}/${r.data.total} device${r.data.total !== 1 ? 's' : ''}`;
+      }) },
+    { key: 'terminal', label: 'Open terminal', sub: 'Pick a device', icon: Terminal, color: 'var(--violet)',
+      run: () => { setActionMsg(null); setPickTerminal(true); } },
+    { key: 'sync', label: 'Sync config', sub: 'Pull latest /export', icon: RefreshCw, color: 'var(--ink-2)',
+      run: () => runAction('sync', async () => {
+        const r = await operationsApi.syncAll();
+        const ok = r.data.results.filter(x => x.ok).length;
+        qc.invalidateQueries({ queryKey: ['ops-insights'] });
+        return `Synced ${ok}/${r.data.total} device${r.data.total !== 1 ? 's' : ''}`;
+      }) },
+    { key: 'events', label: 'Tail events', sub: 'Live syslog stream', icon: Activity, color: 'var(--ink-2)',
+      run: () => navigate('/events') },
+    { key: 'topology', label: 'Open topology', sub: 'Visualize links', icon: GitBranch, color: 'var(--ink-2)',
+      run: () => navigate('/topology') },
   ];
 
+  // Security rollup derived values
+  const scored = (posture ?? []).filter(p => p.score !== null);
+  const avgScore = scored.length ? Math.round(scored.reduce((s, p) => s + (p.score ?? 0), 0) / scored.length) : null;
+  const highFindings = (posture ?? []).reduce((s, p) => s + p.checks.filter(c => c.severity === 'high').length, 0);
+  const worstDevices = [...scored].sort((a, b) => (a.score ?? 0) - (b.score ?? 0)).slice(0, 3);
+  const scoreColor = (s: number | null) => s == null ? 'var(--ink-3)' : s >= 85 ? 'var(--good)' : s >= 60 ? 'var(--warn)' : 'var(--bad)';
+
+  const sortedCapacity = [...capacity].sort((a, b) => Math.max(b.cpu, b.mem_pct) - Math.max(a.cpu, a.mem_pct));
+  const meterColor = (v: number) => v >= 90 ? 'var(--bad)' : v >= 75 ? 'var(--warn)' : 'var(--accent)';
+
   const sevColor = (s: string) => s === 'error' ? 'var(--bad)' : s === 'warn' ? 'var(--warn)' : 'var(--info)';
+  const activityIcon = (kind: string) => kind === 'config' ? FileText : kind === 'alert' ? Bell : Activity;
 
   return (
     <div className="space-y-4">
@@ -736,24 +776,148 @@ function OperationsView({
         <div className="card" style={{ padding: '18px 20px' }}>
           <div className="text-[13px] font-semibold mb-3" style={{ color: 'var(--ink)' }}>Quick actions</div>
           <div className="grid gap-2" style={{ gridTemplateColumns: '1fr 1fr' }}>
-            {quickActions.map(({ label, sub, icon: Icon, path, color }) => (
-              <button
-                key={label}
-                onClick={() => navigate(path)}
-                className="text-left rounded-[6px] px-[14px] py-[12px] transition-colors"
-                style={{ background: 'var(--surface-2)', border: '1px solid var(--line)' }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-3)')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
-              >
-                <div className="flex items-center gap-2 mb-[3px]">
-                  <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color }} />
-                  <span className="text-[12.5px] font-semibold" style={{ color }}>{label}</span>
-                </div>
-                <div className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{sub}</div>
-              </button>
-            ))}
+            {actions.map(({ key, label, sub, icon: Icon, color, run }) => {
+              const isBusy = busy === key;
+              return (
+                <button
+                  key={key}
+                  onClick={run}
+                  disabled={!!busy}
+                  className="text-left rounded-[6px] px-[14px] py-[12px] transition-colors disabled:opacity-60"
+                  style={{ background: 'var(--surface-2)', border: '1px solid var(--line)' }}
+                  onMouseEnter={(e) => { if (!busy) e.currentTarget.style.background = 'var(--surface-3)'; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
+                >
+                  <div className="flex items-center gap-2 mb-[3px]">
+                    {isBusy
+                      ? <RefreshCw className="w-3.5 h-3.5 flex-shrink-0 animate-spin" style={{ color }} />
+                      : <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color }} />}
+                    <span className="text-[12.5px] font-semibold" style={{ color }}>{label}</span>
+                  </div>
+                  <div className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{isBusy ? 'Working…' : sub}</div>
+                </button>
+              );
+            })}
           </div>
+          {actionMsg && (
+            <div
+              className="mt-3 flex items-center gap-2 text-[12px] rounded-[6px] px-3 py-2"
+              style={{
+                background: actionMsg.ok ? 'var(--good-bg, rgba(34,197,94,0.1))' : 'var(--bad-bg, rgba(239,68,68,0.1))',
+                color: actionMsg.ok ? 'var(--good)' : 'var(--bad)',
+              }}
+            >
+              {actionMsg.ok ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> : <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />}
+              {actionMsg.text}
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Capacity + Security rollup */}
+      <div className="grid gap-4" style={{ gridTemplateColumns: '1.3fr 1fr' }}>
+        {/* Capacity / health */}
+        <div className="card" style={{ overflow: 'hidden' }}>
+          <div className="flex items-center gap-2 px-5 py-[14px]" style={{ borderBottom: '1px solid var(--line)' }}>
+            <Cpu className="w-4 h-4" style={{ color: 'var(--accent)' }} />
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Capacity &amp; health</span>
+            <span className="mono text-[11px] ml-auto" style={{ color: 'var(--ink-3)' }}>CPU · MEM</span>
+          </div>
+          {sortedCapacity.length === 0 ? (
+            <div className="py-8 text-center text-[13px]" style={{ color: 'var(--ink-3)' }}>No resource data yet.</div>
+          ) : (
+            <div className="px-5 py-3 space-y-3">
+              {sortedCapacity.slice(0, 8).map((c) => (
+                <button key={c.id} onClick={() => navigate(`/devices/${c.id}`)}
+                  className="w-full text-left flex items-center gap-3 group">
+                  <div className="text-[12.5px] font-medium truncate" style={{ color: 'var(--ink)', width: 130 }}>{c.name}</div>
+                  <div className="flex-1 flex items-center gap-3">
+                    {([['CPU', c.cpu], ['MEM', c.mem_pct]] as const).map(([lbl, v]) => (
+                      <div key={lbl} className="flex-1 flex items-center gap-1.5">
+                        <span className="mono text-[9px]" style={{ color: 'var(--ink-4)', width: 22 }}>{lbl}</span>
+                        <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--surface-3)' }}>
+                          <div className="h-full rounded-full" style={{ width: `${Math.min(100, v)}%`, background: meterColor(v) }} />
+                        </div>
+                        <span className="mono text-[10px] num-tab" style={{ color: 'var(--ink-3)', width: 30, textAlign: 'right' }}>{v}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Security posture rollup */}
+        <button
+          onClick={() => navigate('/security')}
+          className="card text-left transition-colors"
+          style={{ overflow: 'hidden', padding: 0 }}
+          onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--line-strong, var(--line))')}
+          onMouseLeave={(e) => (e.currentTarget.style.borderColor = '')}
+        >
+          <div className="flex items-center gap-2 px-5 py-[14px]" style={{ borderBottom: '1px solid var(--line)' }}>
+            <Shield className="w-4 h-4" style={{ color: 'var(--accent)' }} />
+            <span className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Security posture</span>
+            <ChevronRight className="w-4 h-4 ml-auto" style={{ color: 'var(--ink-3)' }} />
+          </div>
+          <div className="px-5 py-4">
+            <div className="flex items-end gap-3 mb-3">
+              <span className="text-[34px] font-semibold leading-none num-tab" style={{ color: scoreColor(avgScore) }}>
+                {avgScore ?? '—'}
+              </span>
+              <span className="text-[12px] mb-1" style={{ color: 'var(--ink-3)' }}>
+                avg hardening · {scored.length} scanned
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-[12px] mb-3" style={{ color: highFindings > 0 ? 'var(--bad)' : 'var(--ink-3)' }}>
+              <AlertTriangle className="w-3.5 h-3.5" />
+              {highFindings} high-severity finding{highFindings !== 1 ? 's' : ''}
+            </div>
+            {worstDevices.length > 0 && (
+              <div className="space-y-1.5">
+                {worstDevices.map((d) => (
+                  <div key={d.id} className="flex items-center gap-2 text-[12px]">
+                    <StatusDot color={scoreColor(d.score)} size={6} />
+                    <span className="truncate" style={{ color: 'var(--ink-2)' }}>{d.name}</span>
+                    <span className="mono ml-auto num-tab" style={{ color: scoreColor(d.score) }}>{d.score ?? '—'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </button>
+      </div>
+
+      {/* Activity feed */}
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div className="flex items-center gap-2 px-5 py-[14px]" style={{ borderBottom: '1px solid var(--line)' }}>
+          <Clock className="w-4 h-4" style={{ color: 'var(--accent)' }} />
+          <span className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Recent activity</span>
+        </div>
+        {activity.length === 0 ? (
+          <div className="py-8 text-center text-[13px]" style={{ color: 'var(--ink-3)' }}>No recent activity.</div>
+        ) : (
+          <div>
+            {activity.map((a, i) => {
+              const Icon = activityIcon(a.kind);
+              const color = a.kind === 'alert' ? sevColor(a.sev === 'error' ? 'error' : 'warn') : a.kind === 'config' ? 'var(--info)' : 'var(--ink-3)';
+              return (
+                <div key={i} className="flex items-start gap-3 px-5 py-[11px]"
+                  style={{ borderBottom: i < activity.length - 1 ? '1px solid var(--line-soft)' : 'none' }}>
+                  <Icon className="w-3.5 h-3.5 flex-shrink-0 mt-[2px]" style={{ color }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] truncate" style={{ color: 'var(--ink)' }}>{a.title}</div>
+                    <div className="text-[11px]" style={{ color: 'var(--ink-3)' }}>{a.sub}</div>
+                  </div>
+                  <span className="mono text-[10.5px] flex-shrink-0" style={{ color: 'var(--ink-4)' }}>
+                    {formatDistanceToNow(new Date(a.at), { addSuffix: false })}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Fleet strip */}
@@ -798,6 +962,47 @@ function OperationsView({
           })}
         </div>
       </div>
+
+      {/* Terminal device picker */}
+      {pickTerminal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+          onClick={() => setPickTerminal(false)}>
+          <div className="card w-full max-w-sm" style={{ overflow: 'hidden' }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 px-5 py-[14px]" style={{ borderBottom: '1px solid var(--line)' }}>
+              <Terminal className="w-4 h-4" style={{ color: 'var(--violet)' }} />
+              <span className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Open terminal — pick a device</span>
+              <button onClick={() => setPickTerminal(false)} className="ml-auto" style={{ color: 'var(--ink-3)' }}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="max-h-[360px] overflow-y-auto">
+              {[...deviceList].sort((a, b) => (a.status === 'online' ? 0 : 1) - (b.status === 'online' ? 0 : 1)).map((d) => (
+                <button key={d.id} disabled={d.status !== 'online'}
+                  onClick={() => { setTerminalDevice({ id: d.id, name: d.name }); setPickTerminal(false); }}
+                  className="w-full text-left flex items-center gap-3 px-5 py-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ borderBottom: '1px solid var(--line-soft)' }}
+                  onMouseEnter={(e) => { if (d.status === 'online') e.currentTarget.style.background = 'var(--surface-3)'; }}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+                  <StatusDot color={d.status === 'online' ? 'var(--good)' : 'var(--bad)'} size={6} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium truncate" style={{ color: 'var(--ink)' }}>{d.name}</div>
+                    <div className="mono text-[10.5px]" style={{ color: 'var(--ink-3)' }}>{d.ip_address}</div>
+                  </div>
+                  {d.status !== 'online' && <span className="text-[10px]" style={{ color: 'var(--ink-4)' }}>offline</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {terminalDevice && (
+        <TerminalModal
+          deviceId={terminalDevice.id}
+          deviceName={terminalDevice.name}
+          onClose={() => setTerminalDevice(null)}
+        />
+      )}
     </div>
   );
 }

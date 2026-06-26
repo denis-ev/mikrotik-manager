@@ -36,6 +36,7 @@ import devicesRoutes, { setPollerService as setDevicesPoller } from './routes/de
 import clientsRoutes, { setPollerService as setClientsPoller } from './routes/clients';
 import eventsRoutes from './routes/events';
 import backupsRoutes from './routes/backups';
+import operationsRoutes from './routes/operations';
 import metricsRoutes from './routes/metrics';
 import topologyRoutes, { setPollerService as setTopologyPoller } from './routes/topology';
 import settingsRoutes from './routes/settings';
@@ -206,6 +207,7 @@ app.use('/api/devices', devicesRoutes);
 app.use('/api/clients', clientsRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api/backups', backupsRoutes);
+app.use('/api/operations', operationsRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/topology', topologyRoutes);
 app.use('/api/settings', settingsRoutes);

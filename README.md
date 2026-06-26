@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.16.1_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.16.2_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -100,6 +100,12 @@ A self-hosted, full-stack network management platform for MikroTik devices. Moni
 - Device type distribution chart
 - Firmware update notifications with per-device details
 - Historical client count graph (1h → 30d range)
+- **Operations view** — a second dashboard mode focused on running the network:
+  - **Things to handle** — a server-side insights engine that surfaces actionable issues across the fleet: offline devices, firmware/RouterBOOT updates, CPU/memory pressure, devices missing recent backups, connectivity flapping, and WiFi quality problems (weak-signal clients, co-channel overlap, high TX-retry radios), severity-ordered
+  - **Quick actions that actually run** — Run discovery, Back up all online devices, Sync config (pull `/export` + re-collect), and Open terminal (device picker → live in-browser SSH terminal), each with inline progress/result
+  - **Capacity & health** — per-device CPU/memory meters sorted by pressure
+  - **Security posture rollup** — fleet average hardening score, high-severity finding count, and the lowest-scoring devices, deep-linking to the Security Center
+  - **Recent activity feed** — merged config changes, user actions, and alerts
 
 ### Device Management
 - Add, edit, and delete MikroTik devices (routers, switches, wireless APs)
