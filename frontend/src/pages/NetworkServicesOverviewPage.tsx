@@ -60,7 +60,7 @@ export default function NetworkServicesOverviewPage() {
     { key: 'dns',     label: 'DNS',     icon: Globe,  href: '/network-services/dns' },
     { key: 'ntp',     label: 'NTP',     icon: Clock,  href: '/network-services/ntp' },
     { key: 'wireguard', label: 'WireGuard', icon: Shield,    href: '/network-services/wireguard' },
-    { key: 'syslog',    label: 'Syslog',    icon: FileText,  href: '/network-services/syslog' },
+    { key: 'syslog',    label: 'Logging',   icon: FileText,  href: '/network-services/syslog' },
   ] as const;
 
   // KPI: for each service, how many devices have it active?

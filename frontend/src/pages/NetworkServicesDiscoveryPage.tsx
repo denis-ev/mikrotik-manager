@@ -1,12 +1,29 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   Radio, RefreshCw, CheckCircle, XCircle, AlertCircle, Check,
-  HelpCircle, Shield, Eye, EyeOff,
+  HelpCircle, Shield, Eye, EyeOff, Router as RouterIcon, Layers,
 } from 'lucide-react';
-import { routersApi } from '../services/api';
+import { routersApi, switchesApi } from '../services/api';
 import { useCanWrite } from '../hooks/useCanWrite';
 import clsx from 'clsx';
+
+type Scope = 'all' | 'routers' | 'switches';
+
+interface LldpRow {
+  id: number; name: string; ip_address: string;
+  enabled: boolean | null; protocol: string | null; error?: string;
+  kind: 'router' | 'switch';
+}
+
+interface SnmpRow {
+  id: number; name: string; ip_address: string;
+  enabled: boolean | null; community_name?: string; version?: string;
+  auth_protocol?: string; priv_protocol?: string;
+  contact?: string; location?: string; trap_target?: string;
+  error?: string;
+  kind: 'router' | 'switch';
+}
 
 interface SnmpForm {
   enabled: boolean;
@@ -34,6 +51,30 @@ const DEFAULT_SNMP: SnmpForm = {
   priv_password: '',
 };
 
+const SCOPES: { key: Scope; label: string }[] = [
+  { key: 'all',      label: 'All Devices' },
+  { key: 'routers',  label: 'Routers' },
+  { key: 'switches', label: 'Switches' },
+];
+
+function scopeNoun(scope: Scope): string {
+  return scope === 'routers' ? 'routers' : scope === 'switches' ? 'switches' : 'routers & switches';
+}
+
+function KindPill({ kind }: { kind: 'router' | 'switch' }) {
+  return (
+    <span className={clsx(
+      'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+      kind === 'router'
+        ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300'
+        : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+    )}>
+      {kind === 'router' ? <RouterIcon className="w-3 h-3" /> : <Layers className="w-3 h-3" />}
+      {kind === 'router' ? 'Router' : 'Switch'}
+    </span>
+  );
+}
+
 function PasswordInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   const [show, setShow] = useState(false);
   return (
@@ -58,19 +99,48 @@ function PasswordInput({ value, onChange, placeholder }: { value: string; onChan
   );
 }
 
-export default function RouterSettingsPage() {
+export default function NetworkServicesDiscoveryPage() {
   const canWrite = useCanWrite();
+  const [scope, setScope] = useState<Scope>('all');
+
+  const inScope = <T extends { kind: 'router' | 'switch' }>(rows: T[]) =>
+    scope === 'all' ? rows : rows.filter(r => (scope === 'routers' ? r.kind === 'router' : r.kind === 'switch'));
 
   // ── LLDP state ──────────────────────────────────────────────────────────────
   const [lldpApplyResult, setLldpApplyResult] = useState<{ applied: number; total: number } | null>(null);
   const [lldpApplyError, setLldpApplyError]   = useState('');
 
-  const { data: lldpStatuses = [], isLoading: lldpLoading, refetch: refetchLldp, isFetching: lldpFetching } =
-    useQuery({ queryKey: ['routers-lldp'], queryFn: () => routersApi.getLldpStatus().then(r => r.data) });
+  const routerLldp = useQuery({
+    queryKey: ['routers-lldp'],
+    queryFn: () => routersApi.getLldpStatus().then(r => r.data),
+  });
+  const switchLldp = useQuery({
+    queryKey: ['switches-lldp'],
+    queryFn: () => switchesApi.getLldpStatus().then(r => r.data),
+  });
+
+  const lldpLoading  = routerLldp.isLoading || switchLldp.isLoading;
+  const lldpFetching = routerLldp.isFetching || switchLldp.isFetching;
+  const refetchLldp  = () => { routerLldp.refetch(); switchLldp.refetch(); };
+
+  const lldpAll: LldpRow[] = [
+    ...(routerLldp.data ?? []).map(r => ({ ...r, kind: 'router' as const })),
+    ...(switchLldp.data ?? []).map(r => ({ ...r, kind: 'switch' as const })),
+  ];
+  const lldpStatuses = inScope(lldpAll);
 
   const setLldpMutation = useMutation({
-    mutationFn: (enabled: boolean) => routersApi.setLldp(enabled),
-    onSuccess: (res) => { setLldpApplyResult({ applied: res.data.applied, total: res.data.total }); setLldpApplyError(''); refetchLldp(); },
+    mutationFn: async (enabled: boolean) => {
+      const calls = [];
+      if (scope !== 'switches') calls.push(routersApi.setLldp(enabled));
+      if (scope !== 'routers')  calls.push(switchesApi.setLldp(enabled));
+      const results = await Promise.all(calls);
+      return results.reduce(
+        (acc, r) => ({ applied: acc.applied + r.data.applied, total: acc.total + r.data.total }),
+        { applied: 0, total: 0 },
+      );
+    },
+    onSuccess: (res) => { setLldpApplyResult(res); setLldpApplyError(''); refetchLldp(); },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setLldpApplyError(msg || 'Failed to apply LLDP settings');
@@ -88,36 +158,59 @@ export default function RouterSettingsPage() {
 
   const sf = (patch: Partial<SnmpForm>) => { setSnmpForm(f => ({ ...f, ...patch })); setSnmpFormEdited(true); };
 
-  const { data: snmpStatuses = [], isLoading: snmpLoading, refetch: refetchSnmp, isFetching: snmpFetching } =
-    useQuery({
-      queryKey: ['routers-snmp'],
-      queryFn: () => routersApi.getSnmpStatus().then(r => {
-        const first = r.data.find(s => s.enabled != null && !s.error);
-        if (first && !snmpFormEdited) {
-          setSnmpForm({
-            enabled:        first.enabled ?? true,
-            community_name: first.community_name ?? 'public',
-            version:        (first.version as 'v1' | 'v2c' | 'v3') ?? 'v2c',
-            contact:        first.contact ?? '',
-            location:       first.location ?? '',
-            trap_target:    first.trap_target ?? '',
-            auth_protocol:  first.auth_protocol ?? 'MD5',
-            auth_password:  '',
-            priv_protocol:  first.priv_protocol ?? 'none',
-            priv_password:  '',
-          });
-        }
-        return r.data;
-      }),
-    });
+  const routerSnmp = useQuery({
+    queryKey: ['routers-snmp'],
+    queryFn: () => routersApi.getSnmpStatus().then(r => r.data),
+  });
+  const switchSnmp = useQuery({
+    queryKey: ['switches-snmp'],
+    queryFn: () => switchesApi.getSnmpStatus().then(r => r.data),
+  });
+
+  const snmpLoading  = routerSnmp.isLoading || switchSnmp.isLoading;
+  const snmpFetching = routerSnmp.isFetching || switchSnmp.isFetching;
+  const refetchSnmp  = () => { routerSnmp.refetch(); switchSnmp.refetch(); };
+
+  const snmpAll: SnmpRow[] = [
+    ...(routerSnmp.data ?? []).map(r => ({ ...r, kind: 'router' as const })),
+    ...(switchSnmp.data ?? []).map(r => ({ ...r, kind: 'switch' as const })),
+  ];
+  const snmpStatuses = inScope(snmpAll);
+
+  // Pre-populate the form from the first successful device result, unless the
+  // user has already started editing.
+  useEffect(() => {
+    if (snmpFormEdited) return;
+    const first = snmpAll.find(s => s.enabled != null && !s.error);
+    if (first) {
+      setSnmpForm({
+        enabled:        first.enabled ?? true,
+        community_name: first.community_name ?? 'public',
+        version:        (first.version as 'v1' | 'v2c' | 'v3') ?? 'v2c',
+        contact:        first.contact ?? '',
+        location:       first.location ?? '',
+        trap_target:    first.trap_target ?? '',
+        auth_protocol:  first.auth_protocol ?? 'MD5',
+        auth_password:  '',
+        priv_protocol:  first.priv_protocol ?? 'none',
+        priv_password:  '',
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routerSnmp.data, switchSnmp.data]);
 
   const setSnmpMutation = useMutation({
-    mutationFn: () => routersApi.setSnmp(snmpForm),
-    onSuccess: (res) => {
-      setSnmpApplyResult({ applied: res.data.applied, total: res.data.total });
-      setSnmpApplyError('');
-      refetchSnmp();
+    mutationFn: async () => {
+      const calls = [];
+      if (scope !== 'switches') calls.push(routersApi.setSnmp(snmpForm));
+      if (scope !== 'routers')  calls.push(switchesApi.setSnmp(snmpForm));
+      const results = await Promise.all(calls);
+      return results.reduce(
+        (acc, r) => ({ applied: acc.applied + r.data.applied, total: acc.total + r.data.total }),
+        { applied: 0, total: 0 },
+      );
     },
+    onSuccess: (res) => { setSnmpApplyResult(res); setSnmpApplyError(''); refetchSnmp(); },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setSnmpApplyError(msg || 'Failed to apply SNMP settings');
@@ -129,11 +222,31 @@ export default function RouterSettingsPage() {
   return (
     <div className="space-y-6 max-w-3xl">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-gray-900 dark:text-white">Router Settings</h1>
-        <p className="text-sm text-gray-500 dark:text-slate-400 mt-0.5">
-          Network-wide configuration applied to all managed routers
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">Discovery &amp; SNMP</h1>
+          <p className="text-sm text-gray-500 dark:text-slate-400 mt-0.5">
+            Network-wide LLDP discovery and SNMP monitoring configuration
+          </p>
+        </div>
+        {/* Scope selector */}
+        <div className="flex rounded-lg border border-gray-300 dark:border-slate-600 overflow-hidden">
+          {SCOPES.map(s => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => { setScope(s.key); setLldpApplyResult(null); setSnmpApplyResult(null); }}
+              className={clsx(
+                'px-4 py-1.5 text-sm font-medium transition-colors',
+                scope === s.key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-700'
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* ── LLDP Card ──────────────────────────────────────────────────────────── */}
@@ -147,7 +260,7 @@ export default function RouterSettingsPage() {
               Link Layer Discovery Protocol (LLDP)
             </h2>
             <p className="text-sm text-gray-500 dark:text-slate-400 mt-1">
-              LLDP lets your routers announce themselves to neighboring devices and collect
+              LLDP lets your devices announce themselves to neighbors and collect
               neighbor information. Enabling LLDP improves the accuracy of the network topology map.
             </p>
           </div>
@@ -161,26 +274,27 @@ export default function RouterSettingsPage() {
                           'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-400'
           )}>
             {allEnabled ? <CheckCircle className="w-4 h-4" /> : allDisabled ? <XCircle className="w-4 h-4" /> : <HelpCircle className="w-4 h-4" />}
-            {allEnabled  ? 'LLDP is enabled on all online routers' :
-             allDisabled ? 'LLDP is disabled on all online routers' :
-                           'LLDP state is mixed across routers'}
+            {allEnabled  ? `LLDP is enabled on all online ${scopeNoun(scope)}` :
+             allDisabled ? `LLDP is disabled on all online ${scopeNoun(scope)}` :
+                           `LLDP state is mixed across ${scopeNoun(scope)}`}
           </div>
         )}
 
         {lldpLoading ? (
           <div className="flex items-center gap-2 text-sm text-gray-400">
-            <RefreshCw className="w-4 h-4 animate-spin" /> Checking LLDP status on all routers…
+            <RefreshCw className="w-4 h-4 animate-spin" /> Checking LLDP status on all {scopeNoun(scope)}…
           </div>
         ) : lldpStatuses.length === 0 ? (
           <p className="text-sm text-gray-400 dark:text-slate-500">
-            No online routers found. Routers must be online to check or change LLDP settings.
+            No online {scopeNoun(scope)} found. Devices must be online to check or change LLDP settings.
           </p>
         ) : (
           <div className="rounded-lg border border-gray-200 dark:border-slate-700 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 dark:bg-slate-700/50 border-b border-gray-200 dark:border-slate-700">
-                  <th className="table-header px-4 py-2.5 text-left">Router</th>
+                  <th className="table-header px-4 py-2.5 text-left">Device</th>
+                  <th className="table-header px-4 py-2.5 text-left">Type</th>
                   <th className="table-header px-4 py-2.5 text-left">IP</th>
                   <th className="table-header px-4 py-2.5 text-left">LLDP</th>
                   <th className="table-header px-4 py-2.5 text-left">Protocols</th>
@@ -188,8 +302,9 @@ export default function RouterSettingsPage() {
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-slate-700 table-zebra">
                 {lldpStatuses.map(r => (
-                  <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
+                  <tr key={`${r.kind}-${r.id}`} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
                     <td className="px-4 py-2.5 font-medium text-gray-900 dark:text-white">{r.name}</td>
+                    <td className="px-4 py-2.5"><KindPill kind={r.kind} /></td>
                     <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400">{r.ip_address}</td>
                     <td className="px-4 py-2.5">
                       {r.error ? (
@@ -214,7 +329,7 @@ export default function RouterSettingsPage() {
 
         {lldpApplyResult && (
           <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-            <Check className="w-4 h-4" /> Applied to {lldpApplyResult.applied} of {lldpApplyResult.total} routers
+            <Check className="w-4 h-4" /> Applied to {lldpApplyResult.applied} of {lldpApplyResult.total} {scopeNoun(scope)}
           </div>
         )}
         {lldpApplyError && (
@@ -260,7 +375,7 @@ export default function RouterSettingsPage() {
               Simple Network Management Protocol (SNMP)
             </h2>
             <p className="text-sm text-gray-500 dark:text-slate-400 mt-1">
-              Configure SNMP on all managed routers. Settings are applied network-wide.
+              Configure SNMP across your managed {scopeNoun(scope)}. Settings are applied network-wide.
               SNMPv3 provides authentication and optional encryption for secure monitoring.
             </p>
           </div>
@@ -272,7 +387,7 @@ export default function RouterSettingsPage() {
             <div>
               <p className="text-sm font-medium text-gray-900 dark:text-white">Enable SNMP</p>
               <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-                Allow SNMP polling and trap generation on all routers
+                Allow SNMP polling and trap generation on all {scopeNoun(scope)}
               </p>
             </div>
             <button
@@ -390,17 +505,18 @@ export default function RouterSettingsPage() {
           )}
         </fieldset>
 
-        {/* Per-router SNMP status table */}
+        {/* Per-device SNMP status table */}
         {snmpLoading ? (
           <div className="flex items-center gap-2 text-sm text-gray-400">
-            <RefreshCw className="w-4 h-4 animate-spin" /> Checking SNMP status on all routers…
+            <RefreshCw className="w-4 h-4 animate-spin" /> Checking SNMP status on all {scopeNoun(scope)}…
           </div>
         ) : snmpStatuses.length > 0 && (
           <div className="rounded-lg border border-gray-200 dark:border-slate-700 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 dark:bg-slate-700/50 border-b border-gray-200 dark:border-slate-700">
-                  <th className="table-header px-4 py-2.5 text-left">Router</th>
+                  <th className="table-header px-4 py-2.5 text-left">Device</th>
+                  <th className="table-header px-4 py-2.5 text-left">Type</th>
                   <th className="table-header px-4 py-2.5 text-left">IP</th>
                   <th className="table-header px-4 py-2.5 text-left">SNMP</th>
                   <th className="table-header px-4 py-2.5 text-left">Version</th>
@@ -409,8 +525,9 @@ export default function RouterSettingsPage() {
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-slate-700 table-zebra">
                 {snmpStatuses.map(r => (
-                  <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
+                  <tr key={`${r.kind}-${r.id}`} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
                     <td className="px-4 py-2.5 font-medium text-gray-900 dark:text-white">{r.name}</td>
+                    <td className="px-4 py-2.5"><KindPill kind={r.kind} /></td>
                     <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400">{r.ip_address}</td>
                     <td className="px-4 py-2.5">
                       {r.error ? (
@@ -446,7 +563,7 @@ export default function RouterSettingsPage() {
 
         {snmpApplyResult && (
           <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-            <Check className="w-4 h-4" /> Applied to {snmpApplyResult.applied} of {snmpApplyResult.total} routers
+            <Check className="w-4 h-4" /> Applied to {snmpApplyResult.applied} of {snmpApplyResult.total} {scopeNoun(scope)}
           </div>
         )}
         {snmpApplyError && (
@@ -468,7 +585,7 @@ export default function RouterSettingsPage() {
             >
               {setSnmpMutation.isPending
                 ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Applying…</>
-                : <><Check className="w-3.5 h-3.5" /> Apply to All Routers</>}
+                : <><Check className="w-3.5 h-3.5" /> Apply to {scope === 'all' ? 'All Devices' : scope === 'routers' ? 'All Routers' : 'All Switches'}</>}
             </button>
           </div>
         )}

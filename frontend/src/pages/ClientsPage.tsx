@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Search, Wifi, Network, Users, X, Pencil, Trash2, ChevronUp, ChevronDown, ChevronsUpDown,
   ChevronLeft, ChevronRight, RefreshCw,
@@ -59,6 +59,20 @@ function CategoryIcon({ category }: { category?: string }) {
       <Icon className="w-3.5 h-3.5" />
     </span>
   );
+}
+
+function signalLabel(dbm: number): string {
+  if (dbm >= -55) return 'Excellent';
+  if (dbm >= -65) return 'Good';
+  if (dbm >= -75) return 'Fair';
+  return 'Poor';
+}
+
+function signalColor(dbm: number): string {
+  if (dbm >= -55) return 'text-green-600 dark:text-green-400';
+  if (dbm >= -65) return 'text-lime-600 dark:text-lime-400';
+  if (dbm >= -75) return 'text-yellow-600 dark:text-yellow-400';
+  return 'text-red-500 dark:text-red-400';
 }
 
 function formatDataBytes(bytes: number): string {
@@ -174,6 +188,21 @@ export default function ClientsPage() {
   const canWrite = useCanWrite();
   const [search, setSearch] = useState('');
   const [showAll, setShowAll] = useState(false);
+  // Wired/wireless filter lives in the URL (?type=wireless) so the sidebar and
+  // the legacy /wireless/clients route can deep-link to a pre-filtered view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawType = searchParams.get('type');
+  const typeFilter: 'wired' | 'wireless' | null =
+    rawType === 'wired' || rawType === 'wireless' ? rawType : null;
+  const setTypeFilter = (t: 'wired' | 'wireless' | null) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (t) next.set('type', t); else next.delete('type');
+      return next;
+    }, { replace: true });
+    setPage(0);
+  };
+  const isWireless = typeFilter === 'wireless';
   const [page, setPage] = useState(0);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [sortCol, setSortCol] = useState<string>('last_seen');
@@ -204,10 +233,10 @@ export default function ClientsPage() {
   };
 
   const { data, isLoading } = useQuery({
-    queryKey: ['clients', { search, showAll, page, pageSize, sortCol, sortDir }],
+    queryKey: ['clients', { search, showAll, typeFilter, page, pageSize, sortCol, sortDir }],
     queryFn: () =>
       clientsApi
-        .list({ search: search || undefined, active: showAll ? undefined : true, limit: pageSize, offset: page * pageSize, sort: sortCol, dir: sortDir })
+        .list({ search: search || undefined, active: showAll ? undefined : true, client_type: typeFilter ?? undefined, limit: pageSize, offset: page * pageSize, sort: sortCol, dir: sortDir })
         .then((r) => r.data),
     refetchInterval: refreshInterval ?? false,
     // Keep the current rows on screen while a sort/page/search refetch is in
@@ -265,6 +294,27 @@ export default function ClientsPage() {
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
           />
+        </div>
+        {/* Wired / wireless segmented filter */}
+        <div className="flex rounded-lg border border-gray-300 dark:border-slate-600 overflow-hidden">
+          {([
+            { key: null, label: 'All' },
+            { key: 'wired' as const, label: 'Wired' },
+            { key: 'wireless' as const, label: 'Wireless' },
+          ]).map(({ key, label }) => (
+            <button
+              key={label}
+              onClick={() => setTypeFilter(key)}
+              className={clsx(
+                'px-3 py-2 text-sm font-medium transition-colors',
+                typeFilter === key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-700'
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <button
           onClick={() => { setShowAll((s) => !s); setPage(0); }}
@@ -329,14 +379,10 @@ export default function ClientsPage() {
             <div className="overflow-x-auto">
             <table className="w-full text-sm table-fixed">
               <colgroup>
-                <col style={{ width: '22%' }} />
-                <col style={{ width: '12%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '11%' }} />
-                <col style={{ width: '7%' }} />
-                <col style={{ width: '13%' }} />
-                <col style={{ width: '10%' }} />
-                <col style={{ width: '12%' }} />
+                {(isWireless
+                  ? ['20%', '11%', '11%', '11%', '9%', '6%', '12%', '9%', '11%']
+                  : ['22%', '12%', '13%', '11%', '7%', '13%', '10%', '12%']
+                ).map((w, i) => <col key={i} style={{ width: w }} />)}
                 {showAll && <col style={{ width: '6%' }} />}
               </colgroup>
               <thead>
@@ -344,27 +390,34 @@ export default function ClientsPage() {
                   {([
                     { col: 'hostname',       label: 'Host / Vendor / MAC', align: 'left'  },
                     { col: 'ip_address',     label: 'IP Address',          align: 'left'  },
-                    { col: 'client_type',    label: 'Type',                align: 'left'  },
+                    // When filtered to wireless, the Type column is redundant —
+                    // show SSID + signal quality instead (not server-sortable).
+                    ...(isWireless
+                      ? [
+                          { col: 'ssid',            label: 'SSID',   align: 'left' as const, noSort: true },
+                          { col: 'signal_strength', label: 'Signal', align: 'left' as const, noSort: true },
+                        ]
+                      : [{ col: 'client_type', label: 'Type', align: 'left' as const }]),
                     { col: 'interface_name', label: 'Port',                align: 'left'  },
                     { col: 'vlan_id',        label: 'VLAN',                align: 'left'  },
                     { col: 'device_name',    label: 'Device',              align: 'left'  },
                     { col: 'traffic_today_bytes', label: 'Data (today)',   align: 'left'  },
                     { col: 'last_seen',      label: 'Last Seen',           align: 'left'  },
-                  ] as { col: string; label: string; align: 'left' | 'right' }[]).map(({ col, label, align }) => (
+                  ] as { col: string; label: string; align: 'left' | 'right'; noSort?: boolean }[]).map(({ col, label, align, noSort }) => (
                     <th
                       key={col}
-                      className={clsx('table-header px-4 py-2.5 cursor-pointer select-none whitespace-nowrap', `text-${align}`)}
-                      onClick={() => toggleSort(col)}
+                      className={clsx('table-header px-4 py-2.5 select-none whitespace-nowrap', !noSort && 'cursor-pointer', `text-${align}`)}
+                      onClick={noSort ? undefined : () => toggleSort(col)}
                     >
                       <span className="inline-flex items-center gap-1">
                         {label}
-                        {sortCol === col ? (
+                        {!noSort && (sortCol === col ? (
                           sortDir === 'asc'
                             ? <ChevronUp className="w-3 h-3 text-blue-500" />
                             : <ChevronDown className="w-3 h-3 text-blue-500" />
                         ) : (
                           <ChevronsUpDown className="w-3 h-3 text-gray-300 dark:text-slate-600" />
-                        )}
+                        ))}
                       </span>
                     </th>
                   ))}
@@ -413,26 +466,44 @@ export default function ClientsPage() {
                     <td className="px-4 py-2.5 font-mono text-gray-600 dark:text-slate-400 truncate">
                       {client.ip_address || '—'}
                     </td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={clsx(
-                          'inline-flex items-center gap-1 text-xs font-medium',
-                          client.client_type === 'wireless'
-                            ? 'text-purple-600 dark:text-purple-400'
-                            : 'text-blue-600 dark:text-blue-400'
-                        )}
-                      >
-                        {client.client_type === 'wireless' ? (
-                          <Wifi className="w-3 h-3" />
-                        ) : (
-                          <Network className="w-3 h-3" />
-                        )}
-                        {client.client_type}
-                        {client.signal_strength != null && (
-                          <span className="text-gray-400 ml-1">({client.signal_strength} dBm)</span>
-                        )}
-                      </span>
-                    </td>
+                    {isWireless ? (
+                      <>
+                        <td className="px-4 py-2.5 text-xs text-gray-600 dark:text-slate-400 truncate">
+                          {(client as Client & { ssid?: string }).ssid || '—'}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs whitespace-nowrap">
+                          {client.signal_strength != null ? (
+                            <span className={clsx('font-medium', signalColor(client.signal_strength))}>
+                              {client.signal_strength} dBm
+                              <span className="ml-1 font-normal opacity-75">({signalLabel(client.signal_strength)})</span>
+                            </span>
+                          ) : (
+                            <span className="text-gray-400 dark:text-slate-500">—</span>
+                          )}
+                        </td>
+                      </>
+                    ) : (
+                      <td className="px-4 py-2.5">
+                        <span
+                          className={clsx(
+                            'inline-flex items-center gap-1 text-xs font-medium',
+                            client.client_type === 'wireless'
+                              ? 'text-purple-600 dark:text-purple-400'
+                              : 'text-blue-600 dark:text-blue-400'
+                          )}
+                        >
+                          {client.client_type === 'wireless' ? (
+                            <Wifi className="w-3 h-3" />
+                          ) : (
+                            <Network className="w-3 h-3" />
+                          )}
+                          {client.client_type}
+                          {client.signal_strength != null && (
+                            <span className="text-gray-400 ml-1">({client.signal_strength} dBm)</span>
+                          )}
+                        </span>
+                      </td>
+                    )}
                     <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400 truncate">
                       {client.interface_name || '—'}
                     </td>

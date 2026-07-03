@@ -4,49 +4,41 @@ import { useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard, Router, Users, Bell, GitBranch, HardDrive,
   Settings, Network, ChevronLeft, ChevronRight, Layers, ChevronDown, SlidersHorizontal, X, Wifi,
-  Server, Globe, Clock, Shield, FileText, Activity, BarChart3, Ticket, ArrowUpCircle,
+  Server, Globe, Clock, Shield, FileText, Activity, BarChart3, Ticket, ArrowUpCircle, Radio,
+  LayoutGrid,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { APP_VERSION } from '../../version';
 import { devicesApi } from '../../services/api';
 
-const navItems = [
+const monitorItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/devices',   icon: Router,          label: 'Devices' },
-  { to: '/clients',   icon: Users,           label: 'Clients' },
-  { to: '/traffic',   icon: Activity,        label: 'Traffic' },
-  { to: '/security',  icon: Shield,          label: 'Security' },
-  { to: '/events',    icon: Bell,            label: 'Events' },
   { to: '/topology',  icon: GitBranch,       label: 'Topology' },
-  { to: '/backups',   icon: HardDrive,       label: 'Backups' },
-  { to: '/firmware',  icon: ArrowUpCircle,   label: 'Firmware' },
-];
-
-const switchSubItems = [
-  { to: '/switches',          icon: Layers,            label: 'Overview' },
-  { to: '/switches/settings', icon: SlidersHorizontal, label: 'Settings' },
-];
-
-const routerSubItems = [
-  { to: '/routers',          icon: Router,            label: 'Overview' },
-  { to: '/routers/settings', icon: SlidersHorizontal, label: 'Settings' },
+  { to: '/traffic',   icon: Activity,        label: 'Traffic' },
+  { to: '/events',    icon: Bell,            label: 'Events' },
+  { to: '/security',  icon: Shield,          label: 'Security' },
 ];
 
 const wirelessSubItems = [
   { to: '/wireless',          icon: Wifi,              label: 'Overview' },
-  { to: '/wireless/clients',  icon: Users,             label: 'Clients' },
+  { to: '/wireless/settings', icon: SlidersHorizontal, label: 'Radios & SSIDs' },
   { to: '/wireless/guest',    icon: Ticket,            label: 'Guest WiFi' },
-  { to: '/wireless/settings', icon: SlidersHorizontal, label: 'Settings' },
 ];
 
 const networkServicesSubItems = [
-  { to: '/network-services',            icon: Network,  label: 'Overview' },
-  { to: '/network-services/dhcp',       icon: Server,   label: 'DHCP' },
-  { to: '/network-services/dns',        icon: Globe,    label: 'DNS' },
-  { to: '/network-services/ntp',        icon: Clock,    label: 'NTP' },
-  { to: '/network-services/wireguard',  icon: Shield,   label: 'WireGuard' },
-  { to: '/network-services/syslog',     icon: FileText, label: 'Syslog' },
+  { to: '/network-services',            icon: Network,   label: 'Overview' },
+  { to: '/network-services/dhcp',       icon: Server,    label: 'DHCP' },
+  { to: '/network-services/dns',        icon: Globe,     label: 'DNS' },
+  { to: '/network-services/ntp',        icon: Clock,     label: 'NTP' },
+  { to: '/network-services/wireguard',  icon: Shield,    label: 'WireGuard' },
+  { to: '/network-services/syslog',     icon: FileText,  label: 'Logging' },
   { to: '/network-services/netflow',    icon: BarChart3, label: 'NetFlow' },
+  { to: '/network-services/discovery',  icon: Radio,     label: 'Discovery & SNMP' },
+];
+
+const operationsItems = [
+  { to: '/firmware',  icon: ArrowUpCircle,   label: 'Firmware' },
+  { to: '/backups',   icon: HardDrive,       label: 'Backups' },
 ];
 
 interface SidebarProps {
@@ -91,6 +83,20 @@ function NavItem({
   );
 }
 
+function SectionLabel({ label, isCollapsed }: { label: string; isCollapsed: boolean }) {
+  if (isCollapsed) {
+    return <div className="hidden md:block my-[8px] mx-2" style={{ height: 1, background: 'var(--line)' }} />;
+  }
+  return (
+    <div
+      className="px-[10px] pt-[14px] pb-[4px] text-[10px] font-semibold uppercase tracking-[0.08em] select-none"
+      style={{ color: 'var(--ink-4)' }}
+    >
+      {label}
+    </div>
+  );
+}
+
 function GroupHeader({
   icon: Icon,
   label,
@@ -119,6 +125,39 @@ function GroupHeader({
   );
 }
 
+/** Collapsed-sidebar icon link that represents a whole group. */
+function CollapsedGroupLink({
+  to,
+  icon: Icon,
+  label,
+  groupActive,
+  onClick,
+}: {
+  to: string;
+  icon: React.ElementType;
+  label: string;
+  groupActive: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <NavLink
+      to={to}
+      title={label}
+      onClick={onClick}
+      className={({ isActive }) =>
+        clsx(
+          'hidden md:flex items-center justify-center rounded-[6px] text-[13px] font-medium transition-colors duration-150 px-2 py-[7px] border-l-2',
+          isActive || groupActive
+            ? 'bg-surface-3 text-ink border-accent'
+            : 'text-ink-2 hover:bg-surface-3 hover:text-ink border-transparent'
+        )
+      }
+    >
+      <Icon className="w-[17px] h-[17px] flex-shrink-0" />
+    </NavLink>
+  );
+}
+
 export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
@@ -135,27 +174,36 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
   const onlineCount = devices.filter(d => d.status === 'online').length;
 
-  const switchesActive = location.pathname.startsWith('/switches');
-  const [switchesOpen, setSwitchesOpen] = useState(switchesActive);
-  const effectiveSwitchesOpen = switchesOpen || switchesActive;
-
-  const routersActive = location.pathname.startsWith('/routers');
-  const [routersOpen, setRoutersOpen] = useState(routersActive);
-  const effectiveRoutersOpen = routersOpen || routersActive;
+  // Collapsible groups: until the user touches the chevron (pref === null) a
+  // group is open exactly when its section is active; after that the manual
+  // choice wins, so collapse always works — even inside the active section.
+  const devicesActive = location.pathname.startsWith('/devices');
+  const [devicesOpenPref, setDevicesOpenPref] = useState<boolean | null>(null);
+  const devicesOpen = devicesOpenPref ?? devicesActive;
 
   const wirelessActive = location.pathname.startsWith('/wireless');
-  const [wirelessOpen, setWirelessOpen] = useState(wirelessActive);
-  const effectiveWirelessOpen = wirelessOpen || wirelessActive;
+  const [wirelessOpenPref, setWirelessOpenPref] = useState<boolean | null>(null);
+  const wirelessOpen = wirelessOpenPref ?? wirelessActive;
 
   const networkServicesActive = location.pathname.startsWith('/network-services');
-  const [networkServicesOpen, setNetworkServicesOpen] = useState(networkServicesActive);
-  const effectiveNetworkServicesOpen = networkServicesOpen || networkServicesActive;
+  const [networkServicesOpenPref, setNetworkServicesOpenPref] = useState<boolean | null>(null);
+  const networkServicesOpen = networkServicesOpenPref ?? networkServicesActive;
 
   const isCollapsed = collapsed;
 
   const handleNavClick = () => {
     onMobileClose();
   };
+
+  // Devices sub-links deep-link into the type-filtered device list.
+  const deviceTypeLinks = [
+    { to: '/devices',          icon: LayoutGrid, label: 'All Devices' },
+    ...(hasRouters  ? [{ to: '/devices?type=RTR', icon: Router, label: 'Routers' }] : []),
+    ...(hasSwitches ? [{ to: '/devices?type=SW',  icon: Layers, label: 'Switches' }] : []),
+    ...(hasWireless ? [{ to: '/devices?type=AP',  icon: Wifi,   label: 'Wireless APs' }] : []),
+  ];
+  // With a single device type the sub-links add nothing over the plain entry.
+  const showDevicesGroup = deviceTypeLinks.length > 2;
 
   return (
     <aside
@@ -196,119 +244,73 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
       {/* Navigation */}
       <nav className="flex-1 px-[14px] py-3 space-y-[1px] overflow-y-auto">
-        {navItems.map(({ to, icon, label }) => (
+        {/* ── Monitor ── */}
+        <SectionLabel label="Monitor" isCollapsed={isCollapsed} />
+        {monitorItems.map(({ to, icon, label }) => (
           <NavItem key={to} to={to} icon={icon} label={label} isCollapsed={isCollapsed} onClick={handleNavClick} />
         ))}
 
-        {/* Divider before device-type groups */}
-        {(hasSwitches || hasRouters || hasWireless) && !isCollapsed && (
-          <div className="my-[6px] mx-2" style={{ height: 1, background: 'var(--line)' }} />
+        {/* ── Network ── */}
+        <SectionLabel label="Network" isCollapsed={isCollapsed} />
+
+        {/* Devices — collapsible group when more than one device type exists */}
+        {isCollapsed ? (
+          <CollapsedGroupLink to="/devices" icon={Router} label="Devices" groupActive={devicesActive} onClick={handleNavClick} />
+        ) : !showDevicesGroup ? (
+          <NavItem to="/devices" icon={Router} label="Devices" isCollapsed={false} onClick={handleNavClick} />
+        ) : (
+          <>
+            <GroupHeader
+              icon={Router}
+              label="Devices"
+              isActive={devicesActive}
+              isOpen={devicesOpen}
+              onToggle={() => setDevicesOpenPref(!devicesOpen)}
+            />
+            {devicesOpen && (
+              <div className="ml-4 pl-3 space-y-[1px]" style={{ borderLeft: '1px solid var(--line)' }}>
+                {deviceTypeLinks.map(({ to, icon: Icon, label }) => {
+                  const [path, query] = to.split('?');
+                  const isActive = location.pathname === path &&
+                    (query ? location.search === `?${query}` : !location.search.includes('type='));
+                  return (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      onClick={handleNavClick}
+                      className={clsx(
+                        'flex items-center gap-[10px] rounded-[6px] text-[13px] font-medium transition-colors duration-150 px-[10px] py-[7px] border-l-2',
+                        isActive
+                          ? 'bg-surface-3 text-ink font-semibold border-accent pl-[8px]'
+                          : 'text-ink-2 hover:bg-surface-3 hover:text-ink border-transparent'
+                      )}
+                    >
+                      <Icon className="w-[17px] h-[17px] flex-shrink-0" />
+                      <span>{label}</span>
+                    </NavLink>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
 
-        {/* Switches group */}
-        {hasSwitches && (
-          isCollapsed ? (
-            <NavLink
-              to="/switches"
-              title="Switches"
-              onClick={handleNavClick}
-              className={({ isActive }) =>
-                clsx(
-                  'hidden md:flex items-center justify-center rounded-[6px] text-[13px] font-medium transition-colors duration-150 px-2 py-[7px] border-l-2',
-                  isActive || switchesActive
-                    ? 'bg-surface-3 text-ink border-accent'
-                    : 'text-ink-2 hover:bg-surface-3 hover:text-ink border-transparent'
-                )
-              }
-            >
-              <Layers className="w-[17px] h-[17px] flex-shrink-0" />
-            </NavLink>
-          ) : (
-            <>
-              <GroupHeader
-                icon={Layers}
-                label="Switches"
-                isActive={switchesActive}
-                isOpen={effectiveSwitchesOpen}
-                onToggle={() => setSwitchesOpen(o => !o)}
-              />
-              {effectiveSwitchesOpen && (
-                <div className="ml-4 pl-3 space-y-[1px]" style={{ borderLeft: '1px solid var(--line)' }}>
-                  {switchSubItems.map(({ to, icon, label }) => (
-                    <NavItem key={to} to={to} end icon={icon} label={label} isCollapsed={false} onClick={handleNavClick} />
-                  ))}
-                </div>
-              )}
-            </>
-          )
-        )}
+        <NavItem to="/clients" icon={Users} label="Clients" isCollapsed={isCollapsed} onClick={handleNavClick} />
 
-        {/* Routers group */}
-        {hasRouters && (
-          isCollapsed ? (
-            <NavLink
-              to="/routers"
-              title="Routers"
-              onClick={handleNavClick}
-              className={({ isActive }) =>
-                clsx(
-                  'hidden md:flex items-center justify-center rounded-[6px] text-[13px] font-medium transition-colors duration-150 px-2 py-[7px] border-l-2',
-                  isActive || routersActive
-                    ? 'bg-surface-3 text-ink border-accent'
-                    : 'text-ink-2 hover:bg-surface-3 hover:text-ink border-transparent'
-                )
-              }
-            >
-              <Router className="w-[17px] h-[17px] flex-shrink-0" />
-            </NavLink>
-          ) : (
-            <>
-              <GroupHeader
-                icon={Router}
-                label="Routers"
-                isActive={routersActive}
-                isOpen={effectiveRoutersOpen}
-                onToggle={() => setRoutersOpen(o => !o)}
-              />
-              {effectiveRoutersOpen && (
-                <div className="ml-4 pl-3 space-y-[1px]" style={{ borderLeft: '1px solid var(--line)' }}>
-                  {routerSubItems.map(({ to, icon, label }) => (
-                    <NavItem key={to} to={to} end icon={icon} label={label} isCollapsed={false} onClick={handleNavClick} />
-                  ))}
-                </div>
-              )}
-            </>
-          )
-        )}
-
-        {/* Wireless group */}
+        {/* Wireless group (only when wireless APs are managed) */}
         {hasWireless && (
           isCollapsed ? (
-            <NavLink
-              to="/wireless"
-              title="Wireless"
-              onClick={handleNavClick}
-              className={({ isActive }) =>
-                clsx(
-                  'hidden md:flex items-center justify-center rounded-[6px] text-[13px] font-medium transition-colors duration-150 px-2 py-[7px] border-l-2',
-                  isActive || wirelessActive
-                    ? 'bg-surface-3 text-ink border-accent'
-                    : 'text-ink-2 hover:bg-surface-3 hover:text-ink border-transparent'
-                )
-              }
-            >
-              <Wifi className="w-[17px] h-[17px] flex-shrink-0" />
-            </NavLink>
+            <CollapsedGroupLink to="/wireless" icon={Wifi} label="Wireless" groupActive={wirelessActive} onClick={handleNavClick} />
           ) : (
             <>
               <GroupHeader
                 icon={Wifi}
                 label="Wireless"
                 isActive={wirelessActive}
-                isOpen={effectiveWirelessOpen}
-                onToggle={() => setWirelessOpen(o => !o)}
+                isOpen={wirelessOpen}
+                onToggle={() => setWirelessOpenPref(!wirelessOpen)}
               />
-              {effectiveWirelessOpen && (
+              {wirelessOpen && (
                 <div className="ml-4 pl-3 space-y-[1px]" style={{ borderLeft: '1px solid var(--line)' }}>
                   {wirelessSubItems.map(({ to, icon, label }) => (
                     <NavItem key={to} to={to} end icon={icon} label={label} isCollapsed={false} onClick={handleNavClick} />
@@ -319,44 +321,34 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           )
         )}
 
-        {/* Network Services group */}
-        <div className="mt-[6px]" style={{ height: 1, background: 'var(--line)', marginInline: '8px' }} />
-        <div className="mt-[6px]">
-          {isCollapsed ? (
-            <NavLink
-              to="/network-services"
-              title="Network Services"
-              onClick={handleNavClick}
-              className={({ isActive }) =>
-                clsx(
-                  'hidden md:flex items-center justify-center rounded-[6px] text-[13px] font-medium transition-colors duration-150 px-2 py-[7px] border-l-2',
-                  isActive || networkServicesActive
-                    ? 'bg-surface-3 text-ink border-accent'
-                    : 'text-ink-2 hover:bg-surface-3 hover:text-ink border-transparent'
-                )
-              }
-            >
-              <Network className="w-[17px] h-[17px] flex-shrink-0" />
-            </NavLink>
-          ) : (
-            <>
-              <GroupHeader
-                icon={Network}
-                label="Network Services"
-                isActive={networkServicesActive}
-                isOpen={effectiveNetworkServicesOpen}
-                onToggle={() => setNetworkServicesOpen(o => !o)}
-              />
-              {effectiveNetworkServicesOpen && (
-                <div className="ml-4 pl-3 space-y-[1px]" style={{ borderLeft: '1px solid var(--line)' }}>
-                  {networkServicesSubItems.map(({ to, icon, label }) => (
-                    <NavItem key={to} to={to} end icon={icon} label={label} isCollapsed={false} onClick={handleNavClick} />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
+        {/* ── Services ── */}
+        <SectionLabel label="Services" isCollapsed={isCollapsed} />
+        {isCollapsed ? (
+          <CollapsedGroupLink to="/network-services" icon={Network} label="Network Services" groupActive={networkServicesActive} onClick={handleNavClick} />
+        ) : (
+          <>
+            <GroupHeader
+              icon={Network}
+              label="Network Services"
+              isActive={networkServicesActive}
+              isOpen={networkServicesOpen}
+              onToggle={() => setNetworkServicesOpenPref(!networkServicesOpen)}
+            />
+            {networkServicesOpen && (
+              <div className="ml-4 pl-3 space-y-[1px]" style={{ borderLeft: '1px solid var(--line)' }}>
+                {networkServicesSubItems.map(({ to, icon, label }) => (
+                  <NavItem key={to} to={to} end icon={icon} label={label} isCollapsed={false} onClick={handleNavClick} />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Operations ── */}
+        <SectionLabel label="Operations" isCollapsed={isCollapsed} />
+        {operationsItems.map(({ to, icon, label }) => (
+          <NavItem key={to} to={to} icon={icon} label={label} isCollapsed={isCollapsed} onClick={handleNavClick} />
+        ))}
       </nav>
 
       {/* Footer: poll status card + settings + collapse */}

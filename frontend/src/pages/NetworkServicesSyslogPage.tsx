@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FileText, RefreshCw, AlertTriangle, Plus, Pencil, Trash2, X, Save,
@@ -517,9 +518,12 @@ export default function NetworkServicesSyslogPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-white">Syslog</h1>
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">Logging</h1>
           <p className="text-sm text-gray-500 dark:text-slate-400">
-            Logging actions and routing rules across your fleet. Coverage shows how many devices share each entry.
+            Syslog actions and routing rules across your fleet. Coverage shows how many devices share each entry.{' '}
+            <Link to="/events" className="text-blue-600 dark:text-blue-400 hover:underline">
+              View live events →
+            </Link>
           </p>
         </div>
         {onlineDevices.length > 0 && (

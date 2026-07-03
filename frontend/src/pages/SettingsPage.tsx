@@ -464,41 +464,67 @@ export default function SettingsPage() {
   const setCfg = (key: string, val: unknown) =>
     setChForm((f) => ({ ...f, config: { ...f.config, [key]: val } }));
 
-  const tabs = [
-    { key: 'general' as const, label: 'General', icon: Settings },
-    { key: 'users' as const, label: 'Users & Roles', icon: Users },
-    { key: 'credentials' as const, label: 'Device Credentials', icon: KeyRound },
-    { key: 'security' as const, label: 'My Password', icon: Key },
-    { key: 'certificate' as const, label: 'Certificate', icon: Lock },
-    { key: 'alerting' as const, label: 'Alerting', icon: Bell },
-    { key: 'automation' as const, label: 'Automation', icon: Zap },
-    ...(isAdmin ? [
-      { key: 'templates' as const, label: 'Config Templates', icon: FileText },
-      { key: 'tags' as const, label: 'Tags', icon: ShieldCheck },
-      { key: 'maintenance' as const, label: 'Maintenance', icon: ShieldAlert },
-      { key: 'audit' as const, label: 'Audit Log', icon: ClipboardList },
-    ] : []),
+  // Tabs are grouped by audience: platform administration, the signed-in
+  // user's own account, and fleet-facing operational configuration.
+  const tabGroups = [
+    {
+      label: 'Platform',
+      tabs: [
+        { key: 'general' as const, label: 'General', icon: Settings },
+        { key: 'users' as const, label: 'Users & Roles', icon: Users },
+        { key: 'certificate' as const, label: 'Certificate', icon: Lock },
+        ...(isAdmin ? [{ key: 'audit' as const, label: 'Audit Log', icon: ClipboardList }] : []),
+      ],
+    },
+    {
+      label: 'My Account',
+      tabs: [
+        { key: 'security' as const, label: 'My Password', icon: Key },
+      ],
+    },
+    {
+      label: 'Fleet',
+      tabs: [
+        { key: 'credentials' as const, label: 'Device Credentials', icon: KeyRound },
+        { key: 'alerting' as const, label: 'Alerting', icon: Bell },
+        { key: 'automation' as const, label: 'Automation', icon: Zap },
+        ...(isAdmin ? [
+          { key: 'templates' as const, label: 'Config Templates', icon: FileText },
+          { key: 'tags' as const, label: 'Tags', icon: ShieldCheck },
+          { key: 'maintenance' as const, label: 'Maintenance', icon: ShieldAlert },
+        ] : []),
+      ],
+    },
   ];
 
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-bold text-gray-900 dark:text-white">Settings</h1>
 
-      <div className="flex gap-1 border-b border-gray-200 dark:border-slate-700">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={clsx(
-              'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-2',
-              activeTab === tab.key
-                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300'
-            )}
-          >
-            <tab.icon className="w-4 h-4" />
-            {tab.label}
-          </button>
+      <div className="flex flex-wrap gap-x-6 gap-y-2 border-b border-gray-200 dark:border-slate-700">
+        {tabGroups.map((group, gi) => (
+          <div key={group.label} className={clsx(gi > 0 && 'sm:border-l sm:border-gray-200 sm:dark:border-slate-700 sm:pl-6')}>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500 select-none pt-1">
+              {group.label}
+            </div>
+            <div className="flex gap-1">
+              {group.tabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={clsx(
+                    'px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-2 whitespace-nowrap',
+                    activeTab === tab.key
+                      ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                      : 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300'
+                  )}
+                >
+                  <tab.icon className="w-4 h-4" />
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
 

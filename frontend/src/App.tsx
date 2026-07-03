@@ -11,13 +11,8 @@ import TopologyPage from './pages/TopologyPage';
 import BackupsPage from './pages/BackupsPage';
 import FirmwarePage from './pages/FirmwarePage';
 import SettingsPage from './pages/SettingsPage';
-import SwitchesOverviewPage from './pages/SwitchesOverviewPage';
-import SwitchesSettingsPage from './pages/SwitchesSettingsPage';
-import RoutersPage from './pages/RoutersPage';
-import RouterSettingsPage from './pages/RouterSettingsPage';
 import WirelessPage from './pages/WirelessPage';
 import WirelessSettingsPage from './pages/WirelessSettingsPage';
-import WirelessClientsPage from './pages/WirelessClientsPage';
 import GuestWifiPage from './pages/GuestWifiPage';
 import ClientDetailPage from './pages/ClientDetailPage';
 import NetworkServicesOverviewPage from './pages/NetworkServicesOverviewPage';
@@ -27,6 +22,7 @@ import NetworkServicesNTPPage from './pages/NetworkServicesNTPPage';
 import NetworkServicesWireGuardPage from './pages/NetworkServicesWireGuardPage';
 import NetworkServicesSyslogPage from './pages/NetworkServicesSyslogPage';
 import NetworkServicesNetflowPage from './pages/NetworkServicesNetflowPage';
+import NetworkServicesDiscoveryPage from './pages/NetworkServicesDiscoveryPage';
 import TrafficAnalyticsPage from './pages/TrafficAnalyticsPage';
 import SecurityPage from './pages/SecurityPage';
 
@@ -60,13 +56,14 @@ export default function App() {
           <Route path="backups" element={<BackupsPage />} />
           <Route path="firmware" element={<FirmwarePage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="switches" element={<SwitchesOverviewPage />} />
-          <Route path="switches/settings" element={<SwitchesSettingsPage />} />
-          <Route path="routers" element={<RoutersPage />} />
-          <Route path="routers/settings" element={<RouterSettingsPage />} />
+          {/* Legacy routes — consolidated in the v0.16.4 UI reorganization */}
+          <Route path="switches" element={<Navigate to="/devices?type=SW" replace />} />
+          <Route path="switches/settings" element={<Navigate to="/network-services/discovery" replace />} />
+          <Route path="routers" element={<Navigate to="/devices?type=RTR" replace />} />
+          <Route path="routers/settings" element={<Navigate to="/network-services/discovery" replace />} />
+          <Route path="wireless/clients" element={<Navigate to="/clients?type=wireless" replace />} />
           <Route path="wireless" element={<WirelessPage />} />
           <Route path="wireless/settings" element={<WirelessSettingsPage />} />
-          <Route path="wireless/clients" element={<WirelessClientsPage />} />
           <Route path="wireless/guest" element={<GuestWifiPage />} />
           <Route path="network-services" element={<NetworkServicesOverviewPage />} />
           <Route path="network-services/dhcp" element={<NetworkServicesDHCPPage />} />
@@ -75,6 +72,7 @@ export default function App() {
           <Route path="network-services/wireguard" element={<NetworkServicesWireGuardPage />} />
           <Route path="network-services/syslog" element={<NetworkServicesSyslogPage />} />
           <Route path="network-services/netflow" element={<NetworkServicesNetflowPage />} />
+          <Route path="network-services/discovery" element={<NetworkServicesDiscoveryPage />} />
           <Route path="traffic" element={<TrafficAnalyticsPage />} />
           <Route path="security" element={<SecurityPage />} />
         </Route>

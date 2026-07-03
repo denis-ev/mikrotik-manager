@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Plus, RefreshCw, Router, Wifi, Trash2, ChevronRight, Search,
@@ -125,7 +125,18 @@ export default function DevicesPage() {
     dir: 'desc',
   });
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'updates'>('all');
-  const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  // Type filter lives in the URL (?type=AP|SW|RTR) so the sidebar and legacy
+  // /routers and /switches routes can deep-link to a pre-filtered view.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawType = searchParams.get('type');
+  const typeFilter = rawType === 'AP' || rawType === 'SW' || rawType === 'RTR' ? rawType : null;
+  const setTypeFilter = (t: string | null) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (t) next.set('type', t); else next.delete('type');
+      return next;
+    }, { replace: true });
+  };
   const [tagFilter, setTagFilter] = useState<number | null>(null);
 
   const { data: devices = [], isLoading } = useQuery({
@@ -333,7 +344,7 @@ export default function DevicesPage() {
           return (
             <button
               key={t}
-              onClick={() => setTypeFilter(f => f === t ? null : t)}
+              onClick={() => setTypeFilter(typeFilter === t ? null : t)}
               className="mono text-[11px] px-[8px] py-[4px] rounded-[5px] transition-colors"
               style={{
                 background: typeFilter === t ? 'var(--surface-3)' : 'transparent',

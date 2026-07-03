@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.16.3_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.16.4_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -178,8 +178,9 @@ Each service supports multi-device management with conflict detection:
 | **DNS** | Upstream servers, static records (A/AAAA/CNAME/MX/NS/PTR/TXT/SRV), cache flush, DoH |
 | **NTP** | Server (broadcast/manycast), client (unicast/multicast), sync status |
 | **WireGuard** | Interface management, peer configuration, public key display, RX/TX stats |
-| **Syslog** | Logging actions (remote/memory/disk/echo) and routing rules; single-device or push-to-all with per-entry coverage; enable/disable rules |
+| **Logging** | Syslog actions (remote/memory/disk/echo) and routing rules; single-device or push-to-all with per-entry coverage; enable/disable rules |
 | **NetFlow** | One-toggle Traffic Flow (NetFlow v9/IPFIX) export per device, pointed at the built-in collector; live export status per device |
+| **Discovery & SNMP** | Fleet-wide LLDP enable/disable and SNMP v1/v2c/v3 configuration with per-device status tables, scoped to all devices, routers only, or switches only |
 
 ### Traffic Analytics (NetFlow)
 - **Built-in NetFlow/IPFIX collector** — receives Traffic Flow exports from your routers on UDP 2055 (no external tools needed); decoder supports both NetFlow v9 and IPFIX
