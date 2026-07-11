@@ -9,6 +9,7 @@ import { firmwareApi } from '../services/api';
 import type { FirmwareRolloutDevice } from '../services/api';
 import { useCanWrite } from '../hooks/useCanWrite';
 import { formatDistanceToNow } from 'date-fns';
+import ChangelogModal from '../components/ChangelogModal';
 
 const ITEM_STATUS: Record<string, { label: string; cls: string; spin?: boolean }> = {
   pending:    { label: 'Pending',      cls: 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400' },
@@ -126,6 +127,7 @@ export default function FirmwarePage() {
   const [scheduleAt, setScheduleAt] = useState('');
   const [viewRolloutId, setViewRolloutId] = useState<number | null>(null);
   const [checkResult, setCheckResult] = useState<string | null>(null);
+  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
 
   const { data: overview, isLoading } = useQuery({
     queryKey: ['fw-overview'],
@@ -193,6 +195,9 @@ export default function FirmwarePage() {
 
   return (
     <div className="space-y-5">
+      {changelogVersion && (
+        <ChangelogModal version={changelogVersion} onClose={() => setChangelogVersion(null)} />
+      )}
       {/* Header */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -280,7 +285,19 @@ export default function FirmwarePage() {
                       </td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-slate-400">{d.model || '—'}</td>
                       <td className="px-4 py-2.5 font-mono text-xs text-gray-700 dark:text-slate-300">{d.ros_version || '—'}</td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-gray-500 dark:text-slate-400">{d.latest_ros_version || '—'}</td>
+                      <td className="px-4 py-2.5 font-mono text-xs">
+                        {d.latest_ros_version ? (
+                          <button
+                            onClick={() => setChangelogVersion(d.latest_ros_version)}
+                            className="text-blue-600 dark:text-blue-400 hover:underline"
+                            title={`View MikroTik's release notes for ${d.latest_ros_version}`}
+                          >
+                            {d.latest_ros_version}
+                          </button>
+                        ) : (
+                          <span className="text-gray-500 dark:text-slate-400">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5 text-xs">
                         {d.routerboard_upgrade_available
                           ? <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-mono">{d.firmware_version} → {d.upgrade_firmware_version}</span>

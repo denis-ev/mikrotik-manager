@@ -531,6 +531,8 @@ export const firmwareApi = {
     api.get<FirmwareRollout & { devices: FirmwareRolloutDevice[] }>(`/firmware/rollouts/${id}`),
   startRollout: (id: number) => api.post(`/firmware/rollouts/${id}/start`),
   cancelRollout: (id: number) => api.post(`/firmware/rollouts/${id}/cancel`),
+  changelog: (version: string) =>
+    api.get<{ version: string; url: string; text: string }>(`/firmware/changelog/${encodeURIComponent(version)}`),
 };
 
 // ─── Operations ────────────────────────────────────────────────────────────────

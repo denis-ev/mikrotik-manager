@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.16.5_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.16.6_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -134,7 +134,7 @@ A Meraki/UniFi-grade firewall experience built on the full RouterOS feature set:
 - **Hit counters & dead-rule insight** — per-rule packet/byte counters surface which rules are matching and flag zero-hit rules; one-click counter reset
 - **NAT wizards** — guided Port Forward, Masquerade (internet sharing), and 1:1 NAT flows instead of raw fields, plus a Custom mode
 - **Safe-apply lockout guard** — refuses to apply an unscoped `input`-chain drop/reject that would lock the platform/admin out of the device, requiring explicit confirmation
-- **Security posture audit** — per-device hardening checklist (insecure services like telnet/ftp/www/api, missing input-chain firewall, SNMP exposure) with a score and one-click remediation, plus a management-services table
+- **Security posture audit** — per-device hardening checklist (insecure services like telnet/ftp/www/api, missing input-chain firewall, SNMP exposure, outdated RouterOS/RouterBOOT firmware) with a score and one-click remediation, plus a management-services table
 - **Bandwidth control** — simple-queue management with up/down caps per IP, subnet, or interface, and a one-click "Limit this client" action on the client detail page
 - **Active connections viewer** — live connection-tracking table (source/destination, protocol, state, rate, bytes) with search
 
@@ -216,6 +216,7 @@ Per-device diagnostic and testing tools accessible from the device detail Tools 
 ### Firmware Orchestration
 Staged fleet-wide RouterOS upgrades, under the top-level **Firmware** section:
 - **Fleet versions** — current RouterOS, latest-known version, and pending RouterBOOT upgrades per device; **Check all for updates** queries every online device live
+- **Release notes in-app** — when an update is available, a "What's new" link on the device's firmware section (and the version on the Firmware page) opens MikroTik's official changelog for that exact version in a modal, with a link out to mikrotik.com
 - **Staged rollouts in waves** — select updatable devices and assign each to a wave (wave 1 = **canary**); the orchestrator runs one rollout at a time, devices sequentially, through a verified pipeline: **pre-upgrade backup → install → ride out the reboot → verify it returned healthy on the new version → next device**
 - **Halt on failure** stops the entire remaining rollout if any device fails, so a bad build never reaches the fleet; a reboot that comes back on the *old* version counts as a failure
 - **Schedule** rollouts for a future time (pair with a maintenance window); live wave-grouped progress with animated per-device status, `from → to` versions, error detail, and **Cancel** (never interrupts an in-flight flash)

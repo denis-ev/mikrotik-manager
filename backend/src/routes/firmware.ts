@@ -117,6 +117,38 @@ router.post('/rollouts/:id/start', requireWrite, async (req: Request, res: Respo
   }
 });
 
+// GET /api/firmware/changelog/:version — proxy MikroTik's per-version release
+// notes (download.mikrotik.com/routeros/<ver>/CHANGELOG) so the UI can show
+// "what's new" without a CORS-blocked cross-origin fetch. Released changelogs
+// are immutable, so successful fetches are cached for the process lifetime.
+const changelogCache = new Map<string, string>();
+const CHANGELOG_CACHE_MAX = 100;
+
+router.get('/changelog/:version', async (req: Request, res: Response) => {
+  const version = String(req.params.version).trim();
+  // RouterOS versions: 7.23.1, 7.16, 6.49.10, plus rc/beta suffixes (7.20rc3)
+  if (!/^\d+\.\d+(\.\d+)?(rc\d+|beta\d+)?$/i.test(version)) {
+    return res.status(400).json({ error: 'Invalid RouterOS version' });
+  }
+  const url = `https://download.mikrotik.com/routeros/${version}/CHANGELOG`;
+
+  const cached = changelogCache.get(version);
+  if (cached) return res.json({ version, url, text: cached });
+
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) {
+      return res.status(404).json({ error: `No changelog found for ${version}`, url });
+    }
+    const text = await resp.text();
+    if (changelogCache.size >= CHANGELOG_CACHE_MAX) changelogCache.clear();
+    changelogCache.set(version, text);
+    res.json({ version, url, text });
+  } catch {
+    res.status(502).json({ error: 'Could not reach the MikroTik changelog server', url });
+  }
+});
+
 // POST /api/firmware/rollouts/:id/cancel — stops before the next device (an
 // in-flight upgrade is never interrupted mid-write)
 router.post('/rollouts/:id/cancel', requireWrite, async (req: Request, res: Response) => {

@@ -1012,7 +1012,13 @@ router.put('/:id/services/:serviceId', requireWrite, async (req, res) => {
 // de-duplicated services, and it never proposes disabling the management
 // service MikroTik Manager itself connects through (that would self-lockout).
 router.get('/:id/security-posture', async (req, res) => {
-  const device = await queryOne<DeviceRow>(`SELECT * FROM devices WHERE id = $1`, [req.params.id]);
+  const device = await queryOne<DeviceRow & {
+    firmware_update_available?: boolean;
+    latest_ros_version?: string | null;
+    routerboard_upgrade_available?: boolean;
+    firmware_version?: string | null;
+    upgrade_firmware_version?: string | null;
+  }>(`SELECT * FROM devices WHERE id = $1`, [req.params.id]);
   if (!device) return res.status(404).json({ error: 'Device not found' });
   // Which RouterOS service the platform uses to reach this device. Default api
   // (8728); api-ssl is 8729. We must never offer to disable this one.
@@ -1077,6 +1083,25 @@ router.get('/:id/security-posture', async (req, res) => {
     if (snmp && snmp['enabled'] === 'true') {
       checks.push({ id: 'snmp-enabled', severity: 'low', title: 'SNMP is enabled',
         detail: 'Ensure SNMP uses a non-default community string and is restricted to trusted addresses.' });
+    }
+
+    // Outdated firmware is a security exposure: RouterOS releases routinely
+    // ship security fixes, so a pending update counts against the posture.
+    // Titles stay version-free so the Security Center's "Common Findings"
+    // rollup aggregates devices on different versions into one row.
+    if (device.firmware_update_available && device.latest_ros_version) {
+      checks.push({
+        id: 'firmware-outdated', severity: 'medium',
+        title: 'RouterOS update available',
+        detail: `This device runs RouterOS ${device.ros_version || '(unknown)'} but ${device.latest_ros_version} is available. RouterOS releases regularly include security fixes — review the changelog and schedule the upgrade from the Firmware section.`,
+      });
+    }
+    if (device.routerboard_upgrade_available) {
+      checks.push({
+        id: 'routerboot-outdated', severity: 'low',
+        title: 'RouterBOOT upgrade pending',
+        detail: `The bootloader (${device.firmware_version || 'current'}) has an available upgrade${device.upgrade_firmware_version ? ` to ${device.upgrade_firmware_version}` : ''}. Apply it after the next RouterOS upgrade from the device's Config tab.`,
+      });
     }
 
     // Graduated score: lighter weights + a floor of 5 so it never reads a hard

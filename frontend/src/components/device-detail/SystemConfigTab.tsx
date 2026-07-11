@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  RefreshCw, Plus, Trash2, CheckCircle, AlertCircle, Download, Server, Cpu,
+  RefreshCw, Plus, Trash2, CheckCircle, AlertCircle, Download, Server, Cpu, FileText,
 } from 'lucide-react';
 import { devicesApi } from '../../services/api';
 import type { Device, IpAddress, Interface } from '../../types';
 import clsx from 'clsx';
 import { useCanWrite } from '../../hooks/useCanWrite';
+import ChangelogModal from '../ChangelogModal';
 
 interface Props {
   deviceId: number;
@@ -31,6 +32,7 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
 
   // ─── Combined edit state ──────────────────────────────────────────────────
   const [editing, setEditing] = useState(false);
+  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   const [sysForm, setSysForm] = useState({
     identity: '',
     ntp_enabled: true,
@@ -210,6 +212,9 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
 
   return (
     <div className="space-y-6">
+      {changelogVersion && (
+        <ChangelogModal version={changelogVersion} onClose={() => setChangelogVersion(null)} />
+      )}
       {/* ── System Settings (identity, NTP, DNS, clock) ── */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-4">
@@ -579,6 +584,12 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
                   <div className="flex-1 text-sm">
                     <p className="font-medium text-orange-700 dark:text-orange-400">Update available: {latestVersion}</p>
                     <p className="text-orange-600 dark:text-orange-500 text-xs mt-0.5">The device will reboot after installing.</p>
+                    <button
+                      onClick={() => setChangelogVersion(latestVersion)}
+                      className="mt-1.5 text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                    >
+                      <FileText className="w-3 h-3" /> What&apos;s new in {latestVersion}
+                    </button>
                   </div>
                   {canWrite && (
                     <button
