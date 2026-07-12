@@ -135,10 +135,23 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
     }
   }, [device.id]);
 
+  // Firmware state is rendered on many screens (Devices list, Firmware page,
+  // dashboard "Things to handle", Security Center). The backend persists the
+  // new state immediately, so refresh those caches whenever it changes here —
+  // otherwise other pages keep stale "update available" data until their own
+  // 30s refetch fires.
+  const invalidateFirmwareState = () => {
+    queryClient.invalidateQueries({ queryKey: ['devices'] });
+    queryClient.invalidateQueries({ queryKey: ['device', deviceId] });
+    queryClient.invalidateQueries({ queryKey: ['fw-overview'] });
+    queryClient.invalidateQueries({ queryKey: ['ops-insights'] });
+    queryClient.invalidateQueries({ queryKey: ['security-fleet'] });
+  };
+
   const checkUpdateMutation = useMutation({
     mutationFn: () => devicesApi.checkUpdate(deviceId),
     onMutate: () => { setUpdateChecking(true); setUpdateError(''); setInstallSuccess(''); },
-    onSuccess: (res) => { setUpdateInfo(res.data); setUpdateChecking(false); },
+    onSuccess: (res) => { setUpdateInfo(res.data); setUpdateChecking(false); invalidateFirmwareState(); },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setUpdateError(msg || 'Failed to check for updates');
@@ -151,6 +164,7 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
     onSuccess: () => {
       setUpdateInfo(null);
       setInstallSuccess('Update installation initiated. The device will reboot shortly.');
+      invalidateFirmwareState();
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
@@ -188,7 +202,7 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
   const checkRouterboardMutation = useMutation({
     mutationFn: () => devicesApi.checkRouterboard(deviceId),
     onMutate: () => { setRbChecking(true); setRbError(''); setRbInstallSuccess(''); },
-    onSuccess: (res) => { setRbInfo(res.data); setRbChecking(false); },
+    onSuccess: (res) => { setRbInfo(res.data); setRbChecking(false); invalidateFirmwareState(); },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setRbError(msg || 'Failed to check RouterBOOT');
@@ -201,6 +215,7 @@ export default function SystemConfigTab({ deviceId, device }: Props) {
     onSuccess: () => {
       setRbInfo(null);
       setRbInstallSuccess('RouterBOOT upgrade initiated. The device will reboot shortly.');
+      invalidateFirmwareState();
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;

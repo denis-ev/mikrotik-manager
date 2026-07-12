@@ -147,6 +147,11 @@ export default function FirmwarePage() {
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['fw-overview'] });
     qc.invalidateQueries({ queryKey: ['fw-rollouts'] });
+    // Firmware flags also drive the Devices page badges, dashboard insights,
+    // and Security Center findings — keep those screens in sync too.
+    qc.invalidateQueries({ queryKey: ['devices'] });
+    qc.invalidateQueries({ queryKey: ['ops-insights'] });
+    qc.invalidateQueries({ queryKey: ['security-fleet'] });
   };
 
   const checkAll = useMutation({
