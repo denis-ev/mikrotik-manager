@@ -2,17 +2,13 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import * as OTPAuth from 'otpauth';
 import * as qrcode from 'qrcode';
-import jwt from 'jsonwebtoken';
 import { query, queryOne } from '../config/database';
-import { signToken, requireAuth } from '../middleware/auth';
+import { signToken, signRawToken, verifyRawToken, requireAuth } from '../middleware/auth';
+import { getSecretsInfo } from '../utils/secrets';
 import { loginRateLimit, rateLimitRedis } from '../middleware/rateLimitRedis';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
+import { validatePassword } from '../utils/passwordPolicy';
 
 const router = Router();
-
-const DEFAULT_JWT_SECRET = 'changeme';
-const DEFAULT_ENCRYPTION_KEY = 'defaultkey32byteslongencryptkey!';
 
 router.get(
   '/security-status',
@@ -21,11 +17,12 @@ router.get(
   async (_req: Request, res: Response) => {
     const warnings: string[] = [];
 
-    if (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET) {
-      warnings.push('jwt_secret_default');
-    }
-    if (!process.env.ENCRYPTION_KEY || process.env.ENCRYPTION_KEY === DEFAULT_ENCRYPTION_KEY) {
-      warnings.push('encryption_key_default');
+    // Secrets self-heal to strong auto-generated values, so the only remaining
+    // risk is an auto-generated secret that couldn't be persisted (it would
+    // churn on restart) — surface that rather than "default".
+    const secrets = getSecretsInfo();
+    if (secrets.ephemeral) {
+      warnings.push('secrets_not_persisted');
     }
 
     const adminUser = await queryOne<{ password_hash: string }>(
@@ -60,7 +57,7 @@ router.post('/login', loginRateLimit(), async (req: Request, res: Response) => {
   }
 
   if (user.totp_enabled) {
-    const totpToken = jwt.sign({ userId: user.id, partial: true }, JWT_SECRET, { expiresIn: '5m' });
+    const totpToken = signRawToken({ userId: user.id, partial: true }, { expiresIn: '5m' });
     return res.json({ requires_totp: true, totp_token: totpToken });
   }
 
@@ -69,14 +66,14 @@ router.post('/login', loginRateLimit(), async (req: Request, res: Response) => {
 });
 
 // Exchange partial TOTP token + code for a full session token
-router.post('/totp/verify', async (req: Request, res: Response) => {
+router.post('/totp/verify', rateLimitRedis({ windowSec: 60, max: 5, keyPrefix: 'totp-verify', allMethods: true }), async (req: Request, res: Response) => {
   const { totp_token, code } = req.body as { totp_token?: string; code?: string };
   if (!totp_token || !code) {
     return res.status(400).json({ error: 'totp_token and code are required' });
   }
   let payload: { userId: number; partial: boolean };
   try {
-    payload = jwt.verify(totp_token, JWT_SECRET) as typeof payload;
+    payload = verifyRawToken<{ userId: number; partial: boolean }>(totp_token);
   } catch {
     return res.status(401).json({ error: 'Invalid or expired TOTP token' });
   }
@@ -177,6 +174,10 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Current and new password required' });
+  }
+  const pwError = validatePassword(newPassword);
+  if (pwError) {
+    return res.status(400).json({ error: pwError });
   }
 
   const user = await queryOne<{ id: number; password_hash: string }>(

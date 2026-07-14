@@ -25,6 +25,9 @@ import {
 } from './services/DeviceBulkAddWorker';
 import { netflowCollector } from './services/netflow/NetflowCollector';
 import { verifyToken, type AuthPayload } from './middleware/auth';
+import { rateLimitRedis } from './middleware/rateLimitRedis';
+import { initSecrets } from './utils/secrets';
+import { reencryptStaleCredentials } from './db/reencryptCredentials';
 import { decrypt } from './utils/crypto';
 import { corsMiddlewareOptions, socketIoCorsOptions } from './utils/corsOrigins';
 
@@ -59,6 +62,27 @@ import credentialPresetsRoutes from './routes/credentialPresets';
 import systemRoutes from './routes/system';
 import { auditMiddleware } from './middleware/auditMiddleware';
 
+// ─── Secret hygiene ───────────────────────────────────────────────────────────
+// Self-healing: if JWT_SECRET / ENCRYPTION_KEY aren't set to strong values, we
+// auto-generate strong ones and persist them, so a deployment is never left on
+// the public repo defaults and never breaks on upgrade. See utils/secrets.ts.
+function provisionSecrets(): void {
+  const info = initSecrets();
+  const sourceLine = `secrets: jwt=${info.jwtSource}, encryption=${info.encSource}`;
+  if (info.jwtSource === 'generated' || info.encSource === 'generated') {
+    console.log(`[secrets] auto-generated strong secret(s) (${sourceLine})`);
+  } else {
+    console.log(`[secrets] ${sourceLine}`);
+  }
+  if (info.ephemeral) {
+    console.error(
+      '[secrets] WARNING: generated secrets could not be persisted (SECRETS_DIR not writable). ' +
+      'They will change on restart — users will be logged out and credentials written now may not ' +
+      'decrypt later. Mount a writable volume at SECRETS_DIR (default /app/data) or set JWT_SECRET/ENCRYPTION_KEY.'
+    );
+  }
+}
+
 const app = express();
 // nginx sits exactly one hop in front; trust its X-Forwarded-For so req.ip is the real client IP
 app.set('trust proxy', 1);
@@ -69,6 +93,19 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const io = new SocketServer(httpServer, {
   cors: socketIoCorsOptions(),
   path: '/socket.io',
+});
+
+// The default namespace broadcasts fleet-activity events (device/client/event
+// updates); require a valid JWT so unauthenticated clients can't subscribe.
+io.use((socket, next) => {
+  const token = (socket.handshake.auth as { token?: string })?.token;
+  if (!token) return next(new Error('No token'));
+  try {
+    socket.data.user = verifyToken(token);
+    next();
+  } catch {
+    next(new Error('Invalid or expired token'));
+  }
 });
 
 io.on('connection', (socket) => {
@@ -249,6 +286,10 @@ if (process.env.NODE_ENV !== 'test') {
 }
 app.use(auditMiddleware);
 
+// Global backstop rate limit on mutating API requests (per user, falling back to
+// per IP before auth runs). Endpoints with stricter needs add their own limiter.
+app.use('/api', rateLimitRedis({ windowSec: 60, max: 120, keyPrefix: 'api-global' }));
+
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -288,6 +329,8 @@ app.use(errorHandler);
 
 // ─── Startup ─────────────────────────────────────────────────────────────────
 async function start(): Promise<void> {
+  provisionSecrets();
+
   // Wait for DB to be ready
   for (let i = 0; i < 10; i++) {
     try {
@@ -302,6 +345,12 @@ async function start(): Promise<void> {
 
   // Run migrations
   await runMigrations();
+
+  // Migrate any credentials still encrypted under a legacy/default key forward
+  // to the current key (runs in the background; safe to skip on failure).
+  reencryptStaleCredentials().catch((e) =>
+    console.warn('[secrets] credential re-encryption sweep skipped:', (e as Error).message)
+  );
 
   // Reset vendor entries that were previously set to '' due to API rate-limiting,
   // so they get re-resolved by the new local OUI database.

@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.16.8_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.16.10_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -448,8 +448,8 @@ All configuration is done via environment variables in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `JWT_SECRET` | `changeme_use_a_long_random_secret_at_least_32_chars` | Secret for signing JWT tokens. **Change this.** |
-| `ENCRYPTION_KEY` | `changeme32byteslongencryptionkey` | 32-character key for encrypting device passwords at rest. **Change this.** |
+| `JWT_SECRET` | *(auto-generated & persisted if unset)* | Secret for signing JWT tokens. Leave unset to have a strong one generated on first boot; set it to pin your own value. |
+| `ENCRYPTION_KEY` | *(auto-generated & persisted if unset)* | Key for encrypting device passwords at rest. Leave unset to auto-generate; set it to pin your own value. |
 | `CORS_ORIGIN` | *(localhost defaults set by Docker Compose)* | Comma-separated list of browser origins allowed to call the API (e.g. `https://manager.example.com`). **Required in production** — set this to your domain. |
 | `DB_PASSWORD` | `mikrotik_secure_pw` | PostgreSQL password |
 | `INFLUXDB_TOKEN` | `mytoken123456789` | InfluxDB admin token |
@@ -459,18 +459,16 @@ All configuration is done via environment variables in `.env`:
 | `HTTP_PORT` | `80` | Host port for HTTP (redirects to HTTPS) |
 | `HTTPS_PORT` | `443` | Host port for HTTPS |
 
-### Credential encryption (`ENCRYPTION_KEY`)
+### Secret management (self-healing)
 
-Device API and SSH passwords stored in PostgreSQL are encrypted at rest using **AES-256-GCM** (`backend/src/utils/crypto.ts`). The key material comes from the **`ENCRYPTION_KEY` environment variable** (see table above). If the value is exactly 32 bytes long it is used as-is; otherwise the implementation derives a 32-byte key with SHA-256 (still driven by that env var).
+`JWT_SECRET` (session signing) and `ENCRYPTION_KEY` (AES-256-GCM credential encryption, `backend/src/utils/crypto.ts`) are managed automatically:
 
-**If the key is lost:** ciphertext cannot be decrypted; you must re-enter credentials on each device (or restore a database backup that was encrypted with the old key).
+- **If set to a strong value in the environment**, that value is used — you stay in control.
+- **If unset or left at an old default**, the backend generates a strong secret **once**, persists it to the `app_data` volume (`SECRETS_DIR`, default `/app/data`), and reuses it on every boot. Secrets live outside the database so a DB dump alone can't reveal the key protecting the credentials in it.
 
-**If the key is rotated (compromise or policy):** there is no automatic bulk re-encryption in the app today. Operational recovery is:
+Upgrades are non-breaking: on startup, existing ciphertext is decrypted via a **legacy-key fallback** (including previous defaults) and transparently **re-encrypted under the current key** by a background sweep. When rotating the JWT secret off a public default, sessions signed with that default are no longer accepted — users simply log in again once.
 
-1. Set a new `ENCRYPTION_KEY` and restart the backend.
-2. For each managed device, update API/SSH credentials via the UI (or API) so the server stores new ciphertext under the new key. Old rows still hold ciphertext from the previous key until updated.
-
-For a planned rotation with many devices, restore from backup or script updates against the API using plaintext passwords from your vault.
+**Key rotation:** set a new `ENCRYPTION_KEY` (or delete the persisted secret to force regeneration) and restart. Old rows keep decrypting via the legacy fallback and are re-encrypted forward automatically. **If the persisted secret and any prior key are both lost**, ciphertext under that key cannot be recovered — re-enter device credentials or restore a backup.
 
 ---
 

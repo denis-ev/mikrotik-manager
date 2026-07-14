@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { createHash } from 'crypto';
 import { query } from '../config/database';
+import { jwtSigningSecret, jwtVerifierSecrets } from '../utils/secrets';
 
 export interface AuthPayload {
   userId: number;
@@ -20,14 +21,42 @@ declare global {
   }
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
-
 export function signToken(payload: AuthPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
+  return jwt.sign(payload, jwtSigningSecret(), { expiresIn: '24h' });
 }
 
 export function verifyToken(token: string): AuthPayload {
-  return jwt.verify(token, JWT_SECRET) as AuthPayload;
+  // Accept the current signing secret plus any prior strong secret, so a secret
+  // rotation doesn't invalidate sessions already issued under the previous one.
+  const secrets = jwtVerifierSecrets();
+  let lastErr: unknown;
+  for (const secret of secrets) {
+    try {
+      return jwt.verify(token, secret) as AuthPayload;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('invalid token');
+}
+
+/** Sign a short-lived token (e.g. the partial 2FA token) with the current secret. */
+export function signRawToken(payload: object, options: jwt.SignOptions): string {
+  return jwt.sign(payload, jwtSigningSecret(), options);
+}
+
+/** Verify a token that was signed with signRawToken, honoring rotated secrets. */
+export function verifyRawToken<T>(token: string): T {
+  const secrets = jwtVerifierSecrets();
+  let lastErr: unknown;
+  for (const secret of secrets) {
+    try {
+      return jwt.verify(token, secret) as T;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('invalid token');
 }
 
 // API tokens ("mtm_…") are hashed at rest; scope maps onto the existing role

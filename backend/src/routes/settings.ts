@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { query, queryOne } from '../config/database';
 import { requireAuth, requireAdmin } from '../middleware/auth';
 import { netflowCollector } from '../services/netflow/NetflowCollector';
+import { validatePassword } from '../utils/passwordPolicy';
 
 const router = Router();
 router.use(requireAuth);
@@ -49,6 +50,10 @@ router.post('/users', requireAdmin, async (req: Request, res: Response) => {
   if (!username || !password) {
     return res.status(400).json({ error: 'username and password required' });
   }
+  const pwError = validatePassword(password);
+  if (pwError) {
+    return res.status(400).json({ error: pwError });
+  }
   const validRoles = ['admin', 'operator', 'viewer'];
   if (!validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role. Must be admin, operator, or viewer' });
@@ -94,8 +99,9 @@ router.put('/users/:id', requireAdmin, async (req: Request, res: Response) => {
     await query(`UPDATE users SET role = $1 WHERE id = $2`, [role, userId]);
   }
   if (password) {
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const pwError = validatePassword(password);
+    if (pwError) {
+      return res.status(400).json({ error: pwError });
     }
     const hash = await bcrypt.hash(password, 12);
     await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [hash, userId]);

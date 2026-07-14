@@ -27,8 +27,10 @@ RUN apk add --no-cache arp-scan libcap openssl \
 # Copy built files
 COPY --from=builder /app/dist ./dist
 
-# Create backups directory
-RUN mkdir -p /app/backups
+# Create writable data directories. Pre-creating them (owned by appuser after
+# the chown below) means a fresh named volume mounted here inherits appuser
+# ownership, so the non-root process can persist backups and secrets.
+RUN mkdir -p /app/backups /app/data
 
 # Create non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup

@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { verifyToken } from '../middleware/auth';
+import { requireAuth } from '../middleware/auth';
 import { query } from '../config/database';
 
 const router = Router();
-router.use(verifyToken);
+router.use(requireAuth);
 
 const CURRENT_VERSION = process.env.npm_package_version || '0.0.0';
 const RAW_URL = 'https://raw.githubusercontent.com/2GT-Media-Group-LLC/mikrotik-manager/main/frontend/package.json';

@@ -16,11 +16,19 @@ export function useSocket(
   useLayoutEffect(() => { eventsRef.current = events; });
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      // Drop the shared socket on logout so a later login reconnects with a fresh token.
+      if (globalSocket) {
+        globalSocket.disconnect();
+        globalSocket = null;
+      }
+      return;
+    }
 
     if (!globalSocket) {
       globalSocket = io('/', {
         path: '/socket.io',
+        auth: { token: useAuthStore.getState().token },
         transports: ['websocket'],
         reconnection: true,
         reconnectionDelay: 2000,
