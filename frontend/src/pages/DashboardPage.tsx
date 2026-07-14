@@ -15,6 +15,7 @@ import { metricsApi, eventsApi, devicesApi, clientsApi, trafficApi, operationsAp
 import type { OpsAttentionItem, OpsCapacityRow, OpsActivityItem } from '../services/api';
 import TerminalModal from '../components/TerminalModal';
 import { useSocket } from '../hooks/useSocket';
+import { useCanWrite } from '../hooks/useCanWrite';
 import { useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNow } from 'date-fns';
 import type { Device, DeviceEvent } from '../types';
@@ -592,6 +593,7 @@ function OperationsView({
   [key: string]: any;
 }) {
   const qc = useQueryClient();
+  const canWrite = useCanWrite();
   const allOnline = (summary?.devices.offline ?? 0) === 0 && (summary?.devices.total ?? 0) > 0;
   const statusText = allOnline ? "Everything's running." : `${summary?.devices.offline} device${summary?.devices.offline !== 1 ? 's' : ''} unreachable.`;
   const statusColor = allOnline ? 'var(--accent)' : 'var(--warn)';
@@ -652,8 +654,8 @@ function OperationsView({
         const ok = r.data.results.filter(x => x.ok).length;
         return `Backed up ${ok}/${r.data.total} device${r.data.total !== 1 ? 's' : ''}`;
       }) },
-    { key: 'terminal', label: 'Open terminal', sub: 'Pick a device', icon: Terminal, color: 'var(--violet)',
-      run: () => { setActionMsg(null); setPickTerminal(true); } },
+    ...(canWrite ? [{ key: 'terminal', label: 'Open terminal', sub: 'Pick a device', icon: Terminal, color: 'var(--violet)',
+      run: () => { setActionMsg(null); setPickTerminal(true); } }] : []),
     { key: 'sync', label: 'Sync config', sub: 'Pull latest /export', icon: RefreshCw, color: 'var(--ink-2)',
       run: () => runAction('sync', async () => {
         const r = await operationsApi.syncAll();

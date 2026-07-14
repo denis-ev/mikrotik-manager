@@ -24,7 +24,7 @@ import {
   stopBulkAddWorker,
 } from './services/DeviceBulkAddWorker';
 import { netflowCollector } from './services/netflow/NetflowCollector';
-import { verifyToken } from './middleware/auth';
+import { verifyToken, type AuthPayload } from './middleware/auth';
 import { decrypt } from './utils/crypto';
 import { corsMiddlewareOptions, socketIoCorsOptions } from './utils/corsOrigins';
 
@@ -81,11 +81,46 @@ io.on('connection', (socket) => {
 // ─── SSH Terminal namespace ────────────────────────────────────────────────────
 const terminalNs = io.of('/terminal');
 
+// Roles allowed to open an interactive device shell. The stored SSH account is
+// the router admin, so console access mirrors requireWrite: viewers are rejected.
+const TERMINAL_ROLES = new Set(['admin', 'operator']);
+
+// Per-user rate limit on shell starts (in-memory; sliding window).
+const TERMINAL_START_LIMIT = 5;
+const TERMINAL_START_WINDOW_MS = 60_000;
+const terminalStartHistory = new Map<number, number[]>();
+
+function terminalStartAllowed(userId: number): boolean {
+  const now = Date.now();
+  const recent = (terminalStartHistory.get(userId) ?? []).filter(
+    (t) => now - t < TERMINAL_START_WINDOW_MS
+  );
+  if (recent.length >= TERMINAL_START_LIMIT) {
+    terminalStartHistory.set(userId, recent);
+    return false;
+  }
+  recent.push(now);
+  terminalStartHistory.set(userId, recent);
+  return true;
+}
+
+function auditTerminal(user: AuthPayload, ip: string, summary: string, deviceId?: number): void {
+  query(
+    `INSERT INTO audit_log (user_id, username, method, path, entity_type, entity_id, summary, ip_address, status_code)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [user.userId, user.username, 'SSH', '/terminal', 'device', deviceId ?? null, summary, ip, 200]
+  ).catch(() => {});
+}
+
 terminalNs.use((socket, next) => {
   const token = (socket.handshake.auth as { token?: string })?.token;
   if (!token) return next(new Error('No token'));
   try {
-    verifyToken(token);
+    const payload = verifyToken(token);
+    if (!TERMINAL_ROLES.has(payload.role)) {
+      return next(new Error('Console access denied for this role'));
+    }
+    socket.data.user = payload;
     next();
   } catch {
     next(new Error('Invalid or expired token'));
@@ -95,10 +130,22 @@ terminalNs.use((socket, next) => {
 terminalNs.on('connection', (socket) => {
   let sshClient: SshClient | null = null;
   let shellStream: ClientChannel | null = null;
+  const user = socket.data.user as AuthPayload;
+  const clientIp = (socket.handshake.address ?? '').replace(/^::ffff:/, '');
 
   socket.on('start', async (payload: { deviceId: number; cols?: number; rows?: number }) => {
     const { deviceId, cols = 80, rows = 24 } = payload;
     try {
+      // Defense in depth: re-check the connection's role at the sink, not just at handshake.
+      if (!user || !TERMINAL_ROLES.has(user.role)) {
+        socket.emit('error', 'Console access denied for this role');
+        return;
+      }
+      if (!terminalStartAllowed(user.userId)) {
+        auditTerminal(user, clientIp, `terminal start rate-limited for device ${deviceId}`, deviceId);
+        socket.emit('error', 'Too many terminal sessions started. Please wait a moment and try again.');
+        return;
+      }
       const device = await queryOne<{
         ip_address: string;
         ssh_port: number | null;
@@ -124,6 +171,7 @@ terminalNs.on('connection', (socket) => {
           (err, stream) => {
             if (err) { socket.emit('error', err.message); return; }
             shellStream = stream;
+            auditTerminal(user, clientIp, `opened SSH shell on device ${deviceId} (${device.ip_address})`, deviceId);
             socket.emit('ready');
 
             stream.on('data', (data: Buffer) => {

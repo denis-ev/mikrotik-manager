@@ -180,14 +180,16 @@ export default function DeviceDetailPage() {
             <ExternalLink className="w-4 h-4" />
             <span className="hidden sm:inline">Web Admin</span>
           </button>
-          <button
-            onClick={() => setShowTerminal(true)}
-            className="btn-secondary flex items-center gap-2 text-sm"
-            title="Open SSH terminal"
-          >
-            <TerminalSquare className="w-4 h-4" />
-            <span className="hidden sm:inline">Terminal</span>
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => setShowTerminal(true)}
+              className="btn-secondary flex items-center gap-2 text-sm"
+              title="Open SSH terminal"
+            >
+              <TerminalSquare className="w-4 h-4" />
+              <span className="hidden sm:inline">Terminal</span>
+            </button>
+          )}
           {canWrite && (
             <button
               onClick={() => syncMutation.mutate()}
