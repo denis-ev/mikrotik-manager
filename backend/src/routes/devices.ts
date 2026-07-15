@@ -14,6 +14,7 @@ import { safeConnectionError } from '../utils/safeClientError';
 import { detectLockoutRisk } from '../utils/firewallSafety';
 import { redis } from '../config/redis';
 import { enqueueBulkAddJob, getBulkAddJobState } from '../services/DeviceBulkAddWorker';
+import { validateCron } from '../utils/cron';
 
 // Resolve a credential preset id into decrypted credentials. Returns null if
 // no id was provided; throws a readable error if the id is invalid.
@@ -1180,6 +1181,122 @@ router.put('/:id/system-config', requireWrite, async (req: Request, res: Respons
   } finally {
     collector.disconnect();
   }
+});
+
+// ─── Per-device polling config ──────────────────────────────────────────────
+// devices.polling_config is a JSONB map of poll-class → override. Any class or
+// field left out falls back to the global default from app_settings; setting
+// enabled:false disables that class's poller for this device only.
+const POLLING_CLASSES = ['fast', 'slow', 'logs', 'macscan', 'spectral', 'apscan', 'configsnap'] as const;
+type PollingClass = typeof POLLING_CLASSES[number];
+const POLLING_ENTRY_FIELDS = ['mode', 'seconds', 'cron', 'enabled'] as const;
+
+interface PollingClassConfig {
+  mode?: 'interval' | 'cron';
+  seconds?: number;
+  cron?: string;
+  enabled?: boolean;
+}
+
+function validatePollingConfig(
+  body: unknown
+): { ok: true; value: Record<string, PollingClassConfig> } | { ok: false; error: string } {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Body must be an object mapping poll class to its config' };
+  }
+
+  const result: Record<string, PollingClassConfig> = {};
+  for (const [cls, rawEntry] of Object.entries(body as Record<string, unknown>)) {
+    if (!(POLLING_CLASSES as readonly string[]).includes(cls)) {
+      return { ok: false, error: `Unknown polling class "${cls}"` };
+    }
+    if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+      return { ok: false, error: `${cls}: entry must be an object` };
+    }
+    const entry = rawEntry as Record<string, unknown>;
+    for (const field of Object.keys(entry)) {
+      if (!(POLLING_ENTRY_FIELDS as readonly string[]).includes(field)) {
+        return { ok: false, error: `${cls}: unknown field "${field}"` };
+      }
+    }
+
+    const out: PollingClassConfig = {};
+
+    if (entry.enabled !== undefined) {
+      if (typeof entry.enabled !== 'boolean') {
+        return { ok: false, error: `${cls}.enabled must be a boolean` };
+      }
+      out.enabled = entry.enabled;
+    }
+
+    if (entry.mode !== undefined) {
+      if (entry.mode !== 'interval' && entry.mode !== 'cron') {
+        return { ok: false, error: `${cls}.mode must be "interval" or "cron"` };
+      }
+      out.mode = entry.mode;
+    }
+
+    if (out.mode === 'interval') {
+      if (typeof entry.seconds !== 'number' || !Number.isInteger(entry.seconds) || entry.seconds < 10) {
+        return { ok: false, error: `${cls}.seconds is required and must be an integer >= 10 when mode is "interval"` };
+      }
+      out.seconds = entry.seconds;
+    } else if (out.mode === 'cron') {
+      if (typeof entry.cron !== 'string' || entry.cron.trim() === '') {
+        return { ok: false, error: `${cls}.cron is required when mode is "cron"` };
+      }
+      if (!validateCron(entry.cron)) {
+        return { ok: false, error: `${cls}.cron is not a valid cron expression` };
+      }
+      out.cron = entry.cron;
+    } else {
+      // No explicit mode: still validate seconds/cron if the caller supplied them.
+      if (entry.seconds !== undefined) {
+        if (typeof entry.seconds !== 'number' || !Number.isInteger(entry.seconds) || entry.seconds < 10) {
+          return { ok: false, error: `${cls}.seconds must be an integer >= 10` };
+        }
+        out.seconds = entry.seconds;
+      }
+      if (entry.cron !== undefined) {
+        if (typeof entry.cron !== 'string' || entry.cron.trim() === '' || !validateCron(entry.cron)) {
+          return { ok: false, error: `${cls}.cron is not a valid cron expression` };
+        }
+        out.cron = entry.cron;
+      }
+    }
+
+    result[cls] = out;
+  }
+
+  return { ok: true, value: result };
+}
+
+// GET /api/devices/:id/polling-config
+router.get('/:id/polling-config', async (req: Request, res: Response) => {
+  const device = await queryOne<{ polling_config: Record<string, PollingClassConfig> | null }>(
+    `SELECT polling_config FROM devices WHERE id = $1`,
+    [req.params.id]
+  );
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+  return res.json({ polling_config: device.polling_config ?? {} });
+});
+
+// PUT /api/devices/:id/polling-config
+router.put('/:id/polling-config', requireWrite, async (req: Request, res: Response) => {
+  const existing = await queryOne<{ id: number }>(`SELECT id FROM devices WHERE id = $1`, [req.params.id]);
+  if (!existing) return res.status(404).json({ error: 'Device not found' });
+
+  const validated = validatePollingConfig(req.body);
+  if (!validated.ok) {
+    return res.status(400).json({ error: validated.error });
+  }
+
+  await query(
+    `UPDATE devices SET polling_config = $1, updated_at = NOW() WHERE id = $2`,
+    [JSON.stringify(validated.value), req.params.id]
+  );
+
+  return res.json({ polling_config: validated.value });
 });
 
 // GET /api/devices/:id/ip-addresses

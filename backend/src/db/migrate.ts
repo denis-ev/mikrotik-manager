@@ -248,6 +248,12 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS latest_ros_version VARCHAR(20);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS routerboard_upgrade_available BOOLEAN DEFAULT FALSE;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS upgrade_firmware_version VARCHAR(20);
 
+-- Per-device polling overrides. Shape: { [pollClass]: { mode?: 'interval'|'cron',
+-- seconds?: number, cron?: string, enabled?: boolean } }. Absent key/field falls
+-- back to the global polling_* / *_interval app_settings; enabled:false disables
+-- that class for the device. Consumed by PollerService.schedulePollCycle.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS polling_config JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- Config history / drift detection: each snapshot stores the canonical /export
 -- .rsc text (config_text), deduped by content hash, and links to the restorable
 -- backup that holds the same .rsc. The snapshot and its backup are one artifact,

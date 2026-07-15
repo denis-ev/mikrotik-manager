@@ -6,10 +6,127 @@ import { Server as SocketServer } from 'socket.io';
 import { getWriteApi } from '../config/influxdb';
 import { Point } from '@influxdata/influxdb-client';
 import { alertService } from './AlertService';
+import { cronMatchesNow } from '../utils/cron';
 
-interface PollJob {
+// Poll classes that a combined job can run over a single connection, in the
+// order they execute on the device.
+export type PollClass = 'fast' | 'slow' | 'logs' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+
+// Sequential run order inside a combined job: cheap/frequent classes first,
+// expensive scans last so a slow scan never delays the fast metrics.
+const RUN_ORDER: PollClass[] = ['fast', 'logs', 'slow', 'macscan', 'configsnap', 'apscan', 'spectral'];
+
+// The scheduler ticks every 30s. Interval gates are compared with half a tick of
+// tolerance so a class configured at exactly the tick interval (e.g. fast=30s)
+// fires every tick instead of drifting to every other tick on scheduling jitter.
+const SCHEDULER_TICK_MS = 30_000;
+const TICK_TOLERANCE_MS = SCHEDULER_TICK_MS / 2;
+
+// Per-class polling override stored in devices.polling_config.
+export interface PollClassConfig {
+  mode?: 'interval' | 'cron';
+  seconds?: number;
+  cron?: string;
+  enabled?: boolean;
+}
+export type PollingConfig = { [cls in PollClass]?: PollClassConfig };
+
+// Device row as read by the poller — SELECT * also returns the polling_config JSONB.
+export interface PollerDeviceRow extends DeviceRow {
+  polling_config?: PollingConfig | null;
+}
+
+// Effective per-device/global cadence for one class after resolving overrides.
+export interface PollGlobals {
+  fast: number;             // seconds
+  slow: number;             // seconds
+  logs: number;             // seconds
+  macscanEnabled: boolean;
+  macscan: number;          // seconds
+  spectralEnabled: boolean;
+  spectral: number;         // seconds
+  apscanEnabled: boolean;
+  apscan: number;           // seconds
+  configsnapEnabled: boolean;
+  configsnap: number;       // seconds
+}
+
+export interface ResolvedPollClass {
+  eligible: boolean;                 // global flags + device_type gating + per-device enabled
+  mode: 'interval' | 'cron';
+  seconds: number;                   // effective interval seconds (interval mode)
+  cron?: string;                     // cron expression (cron mode)
+}
+
+// Legacy single-class jobs (kept so already-queued jobs still process) plus the
+// new combined job that runs several classes over one connection.
+type LegacyPollJob = {
   deviceId: number;
   type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+};
+type CombinedPollJob = { type: 'combined'; deviceId: number; classes: PollClass[] };
+type PollJob = LegacyPollJob | CombinedPollJob;
+
+// Global-default cadence (seconds) for a class.
+function defaultSecondsFor(cls: PollClass, globals: PollGlobals): number {
+  switch (cls) {
+    case 'fast': return globals.fast;
+    case 'slow': return globals.slow;
+    case 'logs': return globals.logs;
+    case 'macscan': return globals.macscan;
+    case 'spectral': return globals.spectral;
+    case 'apscan': return globals.apscan;
+    case 'configsnap': return globals.configsnap;
+  }
+}
+
+// Pure decision helper: resolve a class for a device into { eligible, mode, seconds, cron }.
+// Eligibility mirrors schedulePollCycle's old gating exactly:
+//   - macscan  requires the global mac_scan_enabled flag AND device_type 'switch'
+//   - spectral requires spectral_scan_enabled AND device_type 'wireless_ap'
+//   - apscan   requires ap_scan_enabled AND device_type 'wireless_ap'
+//   - configsnap requires config_snapshot_enabled
+//   - fast/slow/logs are always eligible (device already filtered to status != 'disabled')
+// A per-device `enabled: false` disables the class regardless of globals.
+export function resolvePollClass(
+  cls: PollClass,
+  device: PollerDeviceRow,
+  globals: PollGlobals
+): ResolvedPollClass {
+  const cfg = (device.polling_config && device.polling_config[cls]) || {};
+
+  let eligibleByGlobal: boolean;
+  switch (cls) {
+    case 'macscan':
+      eligibleByGlobal = globals.macscanEnabled && device.device_type === 'switch';
+      break;
+    case 'spectral':
+      eligibleByGlobal = globals.spectralEnabled && device.device_type === 'wireless_ap';
+      break;
+    case 'apscan':
+      eligibleByGlobal = globals.apscanEnabled && device.device_type === 'wireless_ap';
+      break;
+    case 'configsnap':
+      eligibleByGlobal = globals.configsnapEnabled;
+      break;
+    default:
+      eligibleByGlobal = true; // fast, slow, logs
+  }
+  const eligible = eligibleByGlobal && cfg.enabled !== false;
+
+  const globalSeconds = defaultSecondsFor(cls, globals);
+  if (cfg.mode === 'cron' && cfg.cron) {
+    return { eligible, mode: 'cron', seconds: globalSeconds, cron: cfg.cron };
+  }
+  const seconds = typeof cfg.seconds === 'number' && cfg.seconds > 0 ? cfg.seconds : globalSeconds;
+  return { eligible, mode: 'interval', seconds };
+}
+
+// Pure interval gate: due when the elapsed time since the last enqueue reaches
+// the effective interval (minus a half-tick tolerance so exact-interval classes
+// fire every tick). `lastTs` is 0 when the gate has never been set.
+export function intervalDue(lastTs: number, seconds: number, now: number): boolean {
+  return now - lastTs >= seconds * 1000 - TICK_TOLERANCE_MS;
 }
 
 export class PollerService {
@@ -54,8 +171,8 @@ export class PollerService {
     await this.logsQueue.close();
   }
 
-  async scheduleDeviceSync(deviceId: number, type: PollJob['type'] = 'full'): Promise<void> {
-    const jobData: PollJob = { deviceId, type };
+  async scheduleDeviceSync(deviceId: number, type: LegacyPollJob['type'] = 'full'): Promise<void> {
+    const jobData: LegacyPollJob = { deviceId, type };
     if (type === 'full') {
       await this.fastQueue.add('device-full-sync', jobData, {
         attempts: 3,
@@ -82,7 +199,7 @@ export class PollerService {
     // Schedule polls every 30 seconds
     this.schedulerInterval = setInterval(async () => {
       await this.schedulePollCycle();
-    }, 30_000);
+    }, SCHEDULER_TICK_MS);
 
     // Also run immediately
     setTimeout(() => this.schedulePollCycle(), 5000);
@@ -91,84 +208,67 @@ export class PollerService {
   private async schedulePollCycle(): Promise<void> {
     try {
       const appSettings = await this.getAppSettings();
-      const macScanEnabled  = appSettings['mac_scan_enabled']  !== false;
-      const macScanInterval = (appSettings['mac_scan_interval'] as number) || 300;
       const reverseDnsEnabled = appSettings['reverse_dns_enabled'] === true;
-      const spectralEnabled       = appSettings['spectral_scan_enabled'] === true;
-      const spectralIntervalHours = (appSettings['spectral_scan_interval_hours'] as number) || 24;
-      const apScanEnabled         = appSettings['ap_scan_enabled'] === true;
-      const apScanIntervalHours   = (appSettings['ap_scan_interval_hours'] as number) || 24;
       const backupScheduleEnabled = appSettings['backup_schedule_enabled'] === true;
       const backupScheduleCron    = (appSettings['backup_schedule_cron'] as string) || '0 2 * * *';
-      const configSnapEnabled      = appSettings['config_snapshot_enabled'] !== false;
-      const configSnapIntervalMin  = (appSettings['config_snapshot_interval_min'] as number) || 60;
 
-      const devices = await query<DeviceRow>(
+      // Effective global cadences — fast/slow/logs now read their seeds instead of
+      // the old hardcoded 30/300/60, and every class falls back to these when a
+      // device has no per-class override in polling_config.
+      const globals: PollGlobals = {
+        fast: (appSettings['polling_fast_interval'] as number) || 30,
+        slow: (appSettings['polling_slow_interval'] as number) || 300,
+        logs: (appSettings['polling_logs_interval'] as number) || 60,
+        macscanEnabled: appSettings['mac_scan_enabled'] !== false,
+        macscan: (appSettings['mac_scan_interval'] as number) || 300,
+        spectralEnabled: appSettings['spectral_scan_enabled'] === true,
+        spectral: ((appSettings['spectral_scan_interval_hours'] as number) || 24) * 3_600,
+        apscanEnabled: appSettings['ap_scan_enabled'] === true,
+        apscan: ((appSettings['ap_scan_interval_hours'] as number) || 24) * 3_600,
+        configsnapEnabled: appSettings['config_snapshot_enabled'] !== false,
+        configsnap: ((appSettings['config_snapshot_interval_min'] as number) || 60) * 60,
+      };
+
+      const devices = await query<PollerDeviceRow>(
         `SELECT * FROM devices WHERE status != 'disabled'`
       );
 
       const now = Date.now();
       for (const device of devices) {
-        // Fast poll every 30s
-        await this.scheduleDeviceSync(device.id, 'fast');
+        // One pass per device: collect every class that is due this tick.
+        const dueClasses: PollClass[] = [];
+        for (const cls of RUN_ORDER) {
+          if (await this.isDue(device, cls, globals, now)) dueClasses.push(cls);
+        }
+        if (dueClasses.length === 0) continue;
 
-        // Slow poll every 5min (300s)
-        const slowKey = `poll:slow:${device.id}`;
-        const lastSlow = await this.getTimestamp(slowKey);
-        if (now - lastSlow > 300_000) {
-          await this.scheduleDeviceSync(device.id, 'slow');
-          await this.setTimestamp(slowKey, now);
+        // In-flight lock: if the previous combined job for this device hasn't
+        // finished (worker still holds the connection), skip this tick so we
+        // never open a second connection. Gates are NOT advanced when we skip,
+        // so the same classes remain due next tick.
+        const lockKey = `poll:inflight:${device.id}`;
+        const acquired = await this.acquireInflight(lockKey);
+        if (!acquired) {
+          console.debug(`[Poller] Device ${device.id} still in-flight — skipping tick`);
+          continue;
         }
 
-        // Logs poll every 60s
-        const logsKey = `poll:logs:${device.id}`;
-        const lastLogs = await this.getTimestamp(logsKey);
-        if (now - lastLogs > 60_000) {
-          await this.scheduleDeviceSync(device.id, 'logs');
-          await this.setTimestamp(logsKey, now);
-        }
+        await this.fastQueue.add(
+          'device-combined-poll',
+          { type: 'combined', deviceId: device.id, classes: dueClasses } as CombinedPollJob,
+          { attempts: 1 }
+        );
 
-        // MAC scan — switches only, user-configured interval
-        if (macScanEnabled && device.device_type === 'switch') {
-          const macKey = `poll:macscan:${device.id}`;
-          const lastMac = await this.getTimestamp(macKey);
-          if (now - lastMac > macScanInterval * 1_000) {
-            await this.scheduleDeviceSync(device.id, 'macscan');
-            await this.setTimestamp(macKey, now);
-          }
-        }
-
-        // Spectral scan — wireless_ap only, user-configured interval (default 24h)
-        if (spectralEnabled && device.device_type === 'wireless_ap') {
-          const spectralKey = `poll:spectral:${device.id}`;
-          const lastSpectral = await this.getTimestamp(spectralKey);
-          if (now - lastSpectral > spectralIntervalHours * 3_600_000) {
-            await this.scheduleDeviceSync(device.id, 'spectral');
-            await this.setTimestamp(spectralKey, now);
-          }
-        }
-
-        // AP scan — wireless_ap only, user-configured interval (default 24h)
-        if (apScanEnabled && device.device_type === 'wireless_ap') {
-          const apScanKey = `poll:apscan:${device.id}`;
-          const lastApScan = await this.getTimestamp(apScanKey);
-          if (now - lastApScan > apScanIntervalHours * 3_600_000) {
-            await this.scheduleDeviceSync(device.id, 'apscan');
-            await this.setTimestamp(apScanKey, now);
-          }
-        }
-
-        // Config snapshot — capture config history & detect drift, user-configured
-        // interval (default 60min). The snapshot itself dedups by content hash, so
-        // this only stores a new row when the device config actually changed.
-        if (configSnapEnabled) {
-          const configKey = `poll:configsnap:${device.id}`;
-          const lastConfig = await this.getTimestamp(configKey);
-          if (now - lastConfig > configSnapIntervalMin * 60_000) {
-            await this.scheduleDeviceSync(device.id, 'configsnap');
-            // Keep the gate key alive for the full interval (+ buffer) so the
-            // snapshot honours the configured cadence rather than the default TTL.
-            await this.setTimestamp(configKey, now, configSnapIntervalMin * 60 + 120);
+        // Advance the gates at enqueue time (as the old per-class scheduling did),
+        // so cadence is measured from when we decided to poll, not when the job ran.
+        for (const cls of dueClasses) {
+          const resolved = resolvePollClass(cls, device, globals);
+          if (resolved.mode === 'cron') {
+            // Dedup the cron minute — the tick runs every 30s, TTL 60s covers it.
+            await this.setTimestamp(`poll:cronfired:${cls}:${device.id}`, now, 60);
+          } else {
+            // Keep the gate alive for the full interval (+ buffer), min 10 min.
+            await this.setTimestamp(`poll:${cls}:${device.id}`, now, Math.max(600, resolved.seconds + 120));
           }
         }
       }
@@ -231,7 +331,7 @@ export class PollerService {
 
       // Scheduled backups — fire when the cron expression matches the current minute/hour.
       // Redis key with 1-hour TTL prevents double-firing within the same cron window.
-      if (backupScheduleEnabled && this.cronMatchesNow(backupScheduleCron)) {
+      if (backupScheduleEnabled && cronMatchesNow(backupScheduleCron)) {
         const backupKey = 'task:scheduled_backup';
         const lastBackup = await this.getTimestamp(backupKey);
         if (now - lastBackup > 3_600_000) {
@@ -246,6 +346,28 @@ export class PollerService {
     }
   }
 
+  // Is `cls` due for `device` this tick? Combines pure cadence resolution with the
+  // Redis gate state (interval timestamp or cron-fired dedup key). Returns false
+  // for ineligible classes (global flags / device_type / per-device enabled:false).
+  private async isDue(
+    device: PollerDeviceRow,
+    cls: PollClass,
+    globals: PollGlobals,
+    now: number
+  ): Promise<boolean> {
+    const resolved = resolvePollClass(cls, device, globals);
+    if (!resolved.eligible) return false;
+
+    if (resolved.mode === 'cron') {
+      if (!resolved.cron || !cronMatchesNow(resolved.cron, new Date(now))) return false;
+      // Fire once per matching minute — skip if the dedup key is still set.
+      return !(await this.keyExists(`poll:cronfired:${cls}:${device.id}`));
+    }
+
+    const last = await this.getTimestamp(`poll:${cls}:${device.id}`);
+    return intervalDue(last, resolved.seconds, now);
+  }
+
   private async getAppSettings(): Promise<Record<string, unknown>> {
     try {
       const rows = await query<{ key: string; value: unknown }>(
@@ -254,7 +376,9 @@ export class PollerService {
                        'retention_clients_days', 'spectral_scan_enabled',
                        'spectral_scan_interval_hours', 'ap_scan_enabled',
                        'ap_scan_interval_hours', 'backup_schedule_enabled',
-                       'backup_schedule_cron')`
+                       'backup_schedule_cron', 'polling_fast_interval',
+                       'polling_slow_interval', 'polling_logs_interval',
+                       'config_snapshot_enabled', 'config_snapshot_interval_min')`
       );
       const map: Record<string, unknown> = {};
       for (const row of rows) map[row.key] = row.value;
@@ -262,50 +386,6 @@ export class PollerService {
     } catch {
       return {};
     }
-  }
-
-  // Returns true if the 5-part cron expression matches the current time.
-  // Evaluates all five fields — minute, hour, day-of-month, month, day-of-week —
-  // so weekly (e.g. `0 3 * * 0`) and monthly (`0 3 1 * *`) schedules fire only on
-  // the right day, not every day. Supports: *, exact numbers, comma lists,
-  // ranges (a-b), and step values (*/n). Day-of-month and day-of-week follow the
-  // standard cron rule: when both are restricted the job runs if either matches;
-  // when only one is restricted, only that one must match.
-  private cronMatchesNow(cron: string): boolean {
-    const parts = cron.trim().split(/\s+/);
-    if (parts.length < 5) return false;
-    const [minuteField, hourField, domField, monthField, dowField] = parts;
-    const now = new Date();
-    const matchField = (field: string, val: number): boolean => {
-      if (field === '*') return true;
-      return field.split(',').some((f) => {
-        if (f.includes('/')) {
-          const [base, step] = f.split('/');
-          const start = base === '*' ? 0 : Number(base);
-          return val >= start && (val - start) % Number(step) === 0;
-        }
-        if (f.includes('-')) {
-          const [lo, hi] = f.split('-').map(Number);
-          return val >= lo && val <= hi;
-        }
-        return Number(f) === val;
-      });
-    };
-
-    if (!matchField(minuteField, now.getMinutes())) return false;
-    if (!matchField(hourField, now.getHours())) return false;
-    if (!matchField(monthField, now.getMonth() + 1)) return false; // cron months are 1-12
-
-    // Day-of-month (1-31) and day-of-week (0-6, Sun=0). getDay() returns 0 for Sunday.
-    const domRestricted = domField !== '*';
-    const dowRestricted = dowField !== '*';
-    const domMatch = matchField(domField, now.getDate());
-    const dowMatch = matchField(dowField, now.getDay());
-    let dayMatch: boolean;
-    if (!domRestricted && !dowRestricted) dayMatch = true;
-    else if (domRestricted && dowRestricted) dayMatch = domMatch || dowMatch;
-    else dayMatch = domRestricted ? domMatch : dowMatch;
-    return dayMatch;
   }
 
   private async runScheduledBackups(): Promise<void> {
@@ -463,24 +543,62 @@ export class PollerService {
     } catch { /* redis unavailable — timestamp not cached */ }
   }
 
+  private async keyExists(key: string): Promise<boolean> {
+    try {
+      const { redis } = await import('../config/redis');
+      return (await redis.exists(key)) === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  // In-flight lock: SET NX with a 120s safety TTL so a crashed worker can't wedge
+  // a device forever. Returns true if acquired (or if Redis is down — we degrade
+  // to the old always-enqueue behavior rather than stalling all polling).
+  private async acquireInflight(key: string): Promise<boolean> {
+    try {
+      const { redis } = await import('../config/redis');
+      const res = await redis.set(key, '1', 'EX', 120, 'NX');
+      return res === 'OK';
+    } catch {
+      return true;
+    }
+  }
+
+  private async releaseInflight(key: string): Promise<void> {
+    try {
+      const { redis } = await import('../config/redis');
+      await redis.del(key);
+    } catch { /* redis unavailable — lock will expire via TTL */ }
+  }
+
   private startWorkers(): void {
     const workerOptions = {
       connection: createRedisConnection(),
       concurrency: 3,
     };
 
+    // Fast queue carries combined jobs (one connection, all due classes) plus any
+    // legacy fast/full/macscan jobs still in flight. Bumped 3 → 6 now that a tick
+    // opens at most one job per device instead of several.
     this.fastWorker = new Worker(
       'poll-fast',
       async (job: Job<PollJob>) => {
-        await this.processPollJob(job.data);
+        if (job.data.type === 'combined') {
+          await this.processCombinedJob(job.data);
+        } else {
+          await this.processPollJob(job.data);
+        }
       },
-      workerOptions
+      { ...workerOptions, concurrency: 6 }
     );
 
+    // Slow/logs workers stay registered to drain jobs queued before this release.
+    // schedulePollCycle no longer enqueues to them.
     this.slowWorker = new Worker(
       'poll-slow',
       async (job: Job<PollJob>) => {
-        await this.processSlowJob(job.data);
+        if (job.data.type !== 'combined') await this.processSlowJob(job.data);
       },
       { ...workerOptions, connection: createRedisConnection() }
     );
@@ -488,7 +606,7 @@ export class PollerService {
     this.logsWorker = new Worker(
       'poll-logs',
       async (job: Job<PollJob>) => {
-        await this.processLogsJob(job.data);
+        if (job.data.type !== 'combined') await this.processLogsJob(job.data);
       },
       { ...workerOptions, connection: createRedisConnection() }
     );
@@ -500,45 +618,215 @@ export class PollerService {
     });
   }
 
-  private async processPollJob(data: PollJob): Promise<void> {
+  // ─── Combined job: one connection, all due classes ───────────────────────────
+
+  private async processCombinedJob(data: CombinedPollJob): Promise<void> {
+    const lockKey = `poll:inflight:${data.deviceId}`;
+    const device = await this.getDevice(data.deviceId);
+    if (!device) {
+      await this.releaseInflight(lockKey);
+      return;
+    }
+
+    const collector = new DeviceCollector(device);
+    try {
+      try {
+        await collector.connect();
+      } catch (err) {
+        // Connection failed — every due class is skipped and the device is marked
+        // offline via the shared failure path (availability row, alerts, etc.).
+        await this.handleDeviceFailure(device.id, (err as Error).message);
+        return;
+      }
+
+      // Run classes sequentially in RUN_ORDER. Each is wrapped so one failing
+      // class (a transient command error over a live connection) never aborts
+      // the rest — the connection itself already proved the device is reachable.
+      for (const cls of RUN_ORDER) {
+        if (!data.classes.includes(cls)) continue;
+        try {
+          switch (cls) {
+            case 'fast': await this.runFast(collector, device); break;
+            case 'logs': await this.runLogs(collector, device); break;
+            case 'slow': await this.runSlow(collector, device); break;
+            case 'macscan': await this.runMacScan(collector, device); break;
+            case 'configsnap': await this.runConfigSnap(collector, device); break;
+            case 'apscan': await this.runApScan(collector, device); break;
+            case 'spectral': await this.runSpectral(collector, device); break;
+          }
+        } catch (err) {
+          console.error(`[Poller] Combined poll class '${cls}' failed for ${device.name}:`, (err as Error).message);
+        }
+      }
+    } finally {
+      collector.disconnect();
+      await this.releaseInflight(lockKey);
+    }
+  }
+
+  // ─── Per-class runners (operate on an already-connected collector) ────────────
+
+  private async runFast(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    const prevStatus = device.status; // captured from the row read at job start
+    await collector.collectFast();
+    await this.handleOnlineTransition(device, prevStatus);
+  }
+
+  private async runSlow(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    await collector.collectSlow();
+    await collector.collectNeighbors();
+    await collector.collectStp();
+    this.io?.emit('device:updated', { deviceId: device.id });
+
+    // Fire device_discovered for any LLDP neighbors not matched to a managed device.
+    // AlertService's per-cooldownKey cooldown prevents repeat alerts for the same neighbor.
+    const unresolved = await query<{ neighbor_address: string; neighbor_identity: string }>(
+      `SELECT DISTINCT neighbor_address, neighbor_identity
+       FROM topology_links
+       WHERE from_device_id = $1
+         AND to_device_id IS NULL
+         AND neighbor_address IS NOT NULL`,
+      [device.id]
+    );
+    for (const nb of unresolved) {
+      alertService.dispatch('device_discovered',
+        `Unmanaged device discovered: ${nb.neighbor_identity || nb.neighbor_address} (${nb.neighbor_address})`,
+        {
+          details: nb.neighbor_identity || undefined,
+          cooldownKey: `device_discovered:${nb.neighbor_address}`,
+        }
+      ).catch(() => {});
+    }
+  }
+
+  private async runLogs(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    await collector.collectLogs();
+    this.io?.emit('events:updated', { deviceId: device.id });
+
+    // Fire log_error / log_warning alerts if new entries appeared in the last 90s
+    const recent = await query<{ severity: string; message: string }>(
+      `SELECT severity, message FROM events
+       WHERE device_id = $1
+         AND event_time > NOW() - INTERVAL '90 seconds'
+       ORDER BY event_time DESC LIMIT 1`,
+      [device.id]
+    );
+    for (const ev of recent) {
+      if (ev.severity === 'error') {
+        alertService.dispatch('log_error', ev.message, {
+          deviceId: device.id,
+          deviceName: device.name,
+        }).catch(() => {});
+      } else if (ev.severity === 'warning') {
+        alertService.dispatch('log_warning', ev.message, {
+          deviceId: device.id,
+          deviceName: device.name,
+        }).catch(() => {});
+      }
+    }
+  }
+
+  private async runMacScan(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    await collector.runMacScan();
+    this.io?.emit('clients:updated', { deviceId: device.id });
+  }
+
+  private async runSpectral(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    // Fetch wireless interfaces for this device so we know which radios to scan
+    const ifaces = await query<{ name: string }>(
+      `SELECT name FROM wireless_interfaces WHERE device_id = $1 AND disabled = FALSE`,
+      [device.id]
+    );
+    if (ifaces.length === 0) return;
+
+    for (const iface of ifaces) {
+      const rows = await collector.collectSpectralScan(iface.name);
+      if (rows.length === 0) continue;
+      const aggregated = PollerService.aggregateSpectralRows(rows);
+      await query(
+        `INSERT INTO spectral_scan_data (device_id, interface_name, data, scan_type)
+         VALUES ($1, $2, $3, 'scheduled')`,
+        [device.id, iface.name, JSON.stringify(aggregated)]
+      );
+      console.log(`[Poller] Spectral scan saved for ${device.name}/${iface.name} (${aggregated.length} freq points)`);
+    }
+  }
+
+  private async runApScan(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    const ifaces = await query<{ name: string }>(
+      `SELECT name FROM wireless_interfaces WHERE device_id = $1 AND disabled = FALSE`,
+      [device.id]
+    );
+    if (ifaces.length === 0) return;
+
+    const { lookupVendor } = await import('../utils/oui');
+    const allRows: { iface: string; rows: Record<string, string>[] }[] = [];
+    for (const iface of ifaces) {
+      const rows = await collector.scanWireless(iface.name).catch(() => [] as Record<string, string>[]);
+      if (rows.length > 0) allRows.push({ iface: iface.name, rows });
+    }
+    if (allRows.length === 0) return;
+
+    const aggregated = PollerService.aggregateAPScanRows(allRows, lookupVendor);
+    await query(
+      `INSERT INTO ap_scan_data (device_id, data, scan_type) VALUES ($1, $2, 'scheduled')`,
+      [device.id, JSON.stringify(aggregated)]
+    );
+    console.log(`[Poller] AP scan saved for ${device.name} (${aggregated.length} networks)`);
+  }
+
+  private async runConfigSnap(collector: DeviceCollector, _device: DeviceRow): Promise<void> {
+    await collector.snapshotConfig('scheduled');
+  }
+
+  // Shared online-transition side effects: fire device_online, close the open
+  // availability outage row, and emit the UI refresh events. Runs after a
+  // successful fast/full poll (same as before the combined refactor).
+  private async handleOnlineTransition(device: DeviceRow, prevStatus: string): Promise<void> {
+    // Device came online (first poll after add, or recovery from offline)
+    if (prevStatus !== 'online') {
+      alertService.dispatch('device_online', `${device.name} is back online`, {
+        deviceId: device.id,
+        deviceName: device.name,
+      }).catch(() => {});
+      // Close the open outage row if one exists
+      if (prevStatus === 'offline') {
+        query(
+          `UPDATE device_availability
+           SET came_back_online_at = NOW(),
+               duration_seconds = EXTRACT(EPOCH FROM (NOW() - went_offline_at))::INTEGER
+           WHERE device_id = $1 AND came_back_online_at IS NULL`,
+          [device.id]
+        ).catch(() => {});
+      }
+    }
+
+    this.io?.emit('device:updated', { deviceId: device.id });
+    this.io?.emit('clients:updated', { deviceId: device.id });
+  }
+
+  // ─── Legacy single-class handlers (drain jobs queued before this release) ─────
+  // Each connects a fresh collector, runs one class via the shared runner, and
+  // disconnects — preserving the pre-combined behavior for already-queued jobs.
+
+  private async processPollJob(data: LegacyPollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
 
-    const prevStatus = device.status; // capture before poll
     const collector = new DeviceCollector(device);
     try {
       await collector.connect();
 
       if (data.type === 'full') {
+        const prevStatus = device.status;
         await collector.collectAll();
+        await this.handleOnlineTransition(device, prevStatus);
       } else if (data.type === 'macscan') {
-        await collector.runMacScan();
-        this.io?.emit('clients:updated', { deviceId: device.id });
+        await this.runMacScan(collector, device);
         return;
       } else {
-        await collector.collectFast();
+        await this.runFast(collector, device);
       }
-
-      // Device came online (first poll after add, or recovery from offline)
-      if (prevStatus !== 'online') {
-        alertService.dispatch('device_online', `${device.name} is back online`, {
-          deviceId: device.id,
-          deviceName: device.name,
-        }).catch(() => {});
-        // Close the open outage row if one exists
-        if (prevStatus === 'offline') {
-          query(
-            `UPDATE device_availability
-             SET came_back_online_at = NOW(),
-                 duration_seconds = EXTRACT(EPOCH FROM (NOW() - went_offline_at))::INTEGER
-             WHERE device_id = $1 AND came_back_online_at IS NULL`,
-            [device.id]
-          ).catch(() => {});
-        }
-      }
-
-      this.io?.emit('device:updated', { deviceId: device.id });
-      this.io?.emit('clients:updated', { deviceId: device.id });
     } catch (err) {
       await this.handleDeviceFailure(device.id, (err as Error).message);
       throw err;
@@ -621,31 +909,14 @@ export class PollerService {
     });
   }
 
-  private async processSpectralJob(data: PollJob): Promise<void> {
+  private async processSpectralJob(data: LegacyPollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
-
-    // Fetch wireless interfaces for this device so we know which radios to scan
-    const ifaces = await query<{ name: string }>(
-      `SELECT name FROM wireless_interfaces WHERE device_id = $1 AND disabled = FALSE`,
-      [device.id]
-    );
-    if (ifaces.length === 0) return;
 
     const collector = new DeviceCollector(device);
     try {
       await collector.connect();
-      for (const iface of ifaces) {
-        const rows = await collector.collectSpectralScan(iface.name);
-        if (rows.length === 0) continue;
-        const aggregated = PollerService.aggregateSpectralRows(rows);
-        await query(
-          `INSERT INTO spectral_scan_data (device_id, interface_name, data, scan_type)
-           VALUES ($1, $2, $3, 'scheduled')`,
-          [device.id, iface.name, JSON.stringify(aggregated)]
-        );
-        console.log(`[Poller] Spectral scan saved for ${device.name}/${iface.name} (${aggregated.length} freq points)`);
-      }
+      await this.runSpectral(collector, device);
     } catch (err) {
       console.error(`[Poller] Spectral scan failed for ${device.name}:`, (err as Error).message);
     } finally {
@@ -653,33 +924,14 @@ export class PollerService {
     }
   }
 
-  private async processApScanJob(data: PollJob): Promise<void> {
+  private async processApScanJob(data: LegacyPollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
 
-    const ifaces = await query<{ name: string }>(
-      `SELECT name FROM wireless_interfaces WHERE device_id = $1 AND disabled = FALSE`,
-      [device.id]
-    );
-    if (ifaces.length === 0) return;
-
-    const { lookupVendor } = await import('../utils/oui');
     const collector = new DeviceCollector(device);
     try {
       await collector.connect();
-      const allRows: { iface: string; rows: Record<string, string>[] }[] = [];
-      for (const iface of ifaces) {
-        const rows = await collector.scanWireless(iface.name).catch(() => [] as Record<string, string>[]);
-        if (rows.length > 0) allRows.push({ iface: iface.name, rows });
-      }
-      if (allRows.length === 0) return;
-
-      const aggregated = PollerService.aggregateAPScanRows(allRows, lookupVendor);
-      await query(
-        `INSERT INTO ap_scan_data (device_id, data, scan_type) VALUES ($1, $2, 'scheduled')`,
-        [device.id, JSON.stringify(aggregated)]
-      );
-      console.log(`[Poller] AP scan saved for ${device.name} (${aggregated.length} networks)`);
+      await this.runApScan(collector, device);
     } catch (err) {
       console.error(`[Poller] AP scan failed for ${device.name}:`, (err as Error).message);
     } finally {
@@ -687,14 +939,14 @@ export class PollerService {
     }
   }
 
-  private async processConfigSnapJob(data: PollJob): Promise<void> {
+  private async processConfigSnapJob(data: LegacyPollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
 
     const collector = new DeviceCollector(device);
     try {
       await collector.connect();
-      await collector.snapshotConfig('scheduled');
+      await this.runConfigSnap(collector, device);
     } catch (err) {
       console.error(`[Poller] Config snapshot failed for ${device.name}:`, (err as Error).message);
     } finally {
@@ -702,7 +954,7 @@ export class PollerService {
     }
   }
 
-  private async processSlowJob(data: PollJob): Promise<void> {
+  private async processSlowJob(data: LegacyPollJob): Promise<void> {
     if (data.type === 'spectral') {
       return this.processSpectralJob(data);
     }
@@ -719,30 +971,7 @@ export class PollerService {
     const collector = new DeviceCollector(device);
     try {
       await collector.connect();
-      await collector.collectSlow();
-      await collector.collectNeighbors();
-      await collector.collectStp();
-      this.io?.emit('device:updated', { deviceId: device.id });
-
-      // Fire device_discovered for any LLDP neighbors not matched to a managed device.
-      // AlertService's per-cooldownKey cooldown prevents repeat alerts for the same neighbor.
-      const unresolved = await query<{ neighbor_address: string; neighbor_identity: string }>(
-        `SELECT DISTINCT neighbor_address, neighbor_identity
-         FROM topology_links
-         WHERE from_device_id = $1
-           AND to_device_id IS NULL
-           AND neighbor_address IS NOT NULL`,
-        [device.id]
-      );
-      for (const nb of unresolved) {
-        alertService.dispatch('device_discovered',
-          `Unmanaged device discovered: ${nb.neighbor_identity || nb.neighbor_address} (${nb.neighbor_address})`,
-          {
-            details: nb.neighbor_identity || undefined,
-            cooldownKey: `device_discovered:${nb.neighbor_address}`,
-          }
-        ).catch(() => {});
-      }
+      await this.runSlow(collector, device);
     } catch (err) {
       await this.handleDeviceFailure(device.id, (err as Error).message);
     } finally {
@@ -750,37 +979,14 @@ export class PollerService {
     }
   }
 
-  private async processLogsJob(data: PollJob): Promise<void> {
+  private async processLogsJob(data: LegacyPollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
 
     const collector = new DeviceCollector(device);
     try {
       await collector.connect();
-      await collector.collectLogs();
-      this.io?.emit('events:updated', { deviceId: device.id });
-
-      // Fire log_error / log_warning alerts if new entries appeared in the last 90s
-      const recent = await query<{ severity: string; message: string }>(
-        `SELECT severity, message FROM events
-         WHERE device_id = $1
-           AND event_time > NOW() - INTERVAL '90 seconds'
-         ORDER BY event_time DESC LIMIT 1`,
-        [device.id]
-      );
-      for (const ev of recent) {
-        if (ev.severity === 'error') {
-          alertService.dispatch('log_error', ev.message, {
-            deviceId: device.id,
-            deviceName: device.name,
-          }).catch(() => {});
-        } else if (ev.severity === 'warning') {
-          alertService.dispatch('log_warning', ev.message, {
-            deviceId: device.id,
-            deviceName: device.name,
-          }).catch(() => {});
-        }
-      }
+      await this.runLogs(collector, device);
     } catch (err) {
       console.error(`[PollerService] Log collection failed for device ${device.id} (${device.name}):`, (err as Error).message);
     } finally {
@@ -928,8 +1134,8 @@ export class PollerService {
     console.log(`[Poller] Firmware check complete`);
   }
 
-  private async getDevice(deviceId: number): Promise<DeviceRow | null> {
-    const rows = await query<DeviceRow>(`SELECT * FROM devices WHERE id = $1`, [deviceId]);
+  private async getDevice(deviceId: number): Promise<PollerDeviceRow | null> {
+    const rows = await query<PollerDeviceRow>(`SELECT * FROM devices WHERE id = $1`, [deviceId]);
     return rows[0] || null;
   }
 }

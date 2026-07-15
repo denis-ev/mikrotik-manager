@@ -286,7 +286,22 @@ export const devicesApi = {
     rack_slot?: string | null;
     notes?: string | null;
   }) => api.patch<Device>(`/devices/${id}/location`, data),
+  // Per-device polling config (Phase 1 polling engine)
+  getPollingConfig: (id: number) =>
+    api.get<{ polling_config: PollingConfig }>(`/devices/${id}/polling-config`),
+  updatePollingConfig: (id: number, config: PollingConfig) =>
+    api.put<{ polling_config: PollingConfig }>(`/devices/${id}/polling-config`, config),
 };
+
+// ─── Per-device polling config ────────────────────────────────────────────────
+export type PollingClass = 'fast' | 'slow' | 'logs' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+export interface PollingClassConfig {
+  mode?: 'interval' | 'cron';
+  seconds?: number;
+  cron?: string;
+  enabled?: boolean;
+}
+export type PollingConfig = Partial<Record<PollingClass, PollingClassConfig>>;
 
 // ─── Credential Presets ──────────────────────────────────────────────────────
 export interface CredentialPreset {

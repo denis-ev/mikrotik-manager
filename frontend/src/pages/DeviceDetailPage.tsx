@@ -20,9 +20,10 @@ import RadiosTab from '../components/device-detail/RadiosTab';
 import ConnectionsTab from '../components/device-detail/ConnectionsTab';
 import QueuesTab from '../components/device-detail/QueuesTab';
 import SecurityTab from '../components/device-detail/SecurityTab';
+import PollingTab from '../components/device-detail/PollingTab';
 import clsx from 'clsx';
 
-type TabKey = 'overview' | 'ports' | 'vlans' | 'routing' | 'firewall' | 'security' | 'queues' | 'connections' | 'config' | 'config-history' | 'hardware' | 'tools' | 'radios';
+type TabKey = 'overview' | 'ports' | 'vlans' | 'routing' | 'firewall' | 'security' | 'queues' | 'connections' | 'config' | 'config-history' | 'hardware' | 'tools' | 'radios' | 'polling';
 
 function formatUptime(raw: string): string {
   if (!raw) return '—';
@@ -50,7 +51,7 @@ export default function DeviceDetailPage() {
   const queryClient = useQueryClient();
   const canWrite = useCanWrite();
   const [searchParams] = useSearchParams();
-  const VALID_TABS: TabKey[] = ['overview', 'ports', 'vlans', 'routing', 'firewall', 'security', 'queues', 'connections', 'config', 'config-history', 'hardware', 'tools', 'radios'];
+  const VALID_TABS: TabKey[] = ['overview', 'ports', 'vlans', 'routing', 'firewall', 'security', 'queues', 'connections', 'config', 'config-history', 'hardware', 'tools', 'radios', 'polling'];
   const requestedTab = searchParams.get('tab') as TabKey | null;
   const [activeTab, setActiveTab] = useState<TabKey>(requestedTab && VALID_TABS.includes(requestedTab) ? requestedTab : 'overview');
   const [autoOpenBridge, setAutoOpenBridge] = useState<string | null>(null);
@@ -122,6 +123,7 @@ export default function DeviceDetailPage() {
     { key: 'hardware', label: 'Hardware' },
     ...(isWirelessAP ? [{ key: 'radios' as TabKey, label: 'Radios' }] : []),
     { key: 'tools', label: 'Tools' },
+    { key: 'polling', label: 'Polling' },
   ];
 
   const cpuLoad = parseInt(resources?.['cpu-load'] || '0', 10);
@@ -392,6 +394,7 @@ export default function DeviceDetailPage() {
       {activeTab === 'hardware' && <HardwareTab deviceId={deviceId} />}
       {activeTab === 'radios' && <RadiosTab deviceId={deviceId} deviceStatus={device.status} />}
       {activeTab === 'tools' && <ToolsTab deviceId={deviceId} />}
+      {activeTab === 'polling' && <PollingTab deviceId={deviceId} />}
 
       {showTerminal && (
         <TerminalModal
