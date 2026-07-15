@@ -22,6 +22,21 @@ const severityColor = (severity: EventSeverity): string => {
 
 const ALL_SEVERITIES = ['error', 'warning', 'info'] as const;
 
+const sourceBadge = (source?: 'pull' | 'syslog') => {
+  if (source === 'syslog') {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400">
+        syslog
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400">
+      pull
+    </span>
+  );
+};
+
 export default function EventsPage() {
   const queryClient = useQueryClient();
   const canWrite = useCanWrite();
@@ -29,6 +44,7 @@ export default function EventsPage() {
   const [severities, setSeverities] = useState<Set<string>>(new Set(ALL_SEVERITIES));
   const [topic, setTopic] = useState('');
   const [deviceId, setDeviceId] = useState('');
+  const [source, setSource] = useState<'' | 'pull' | 'syslog'>('');
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 100;
 
@@ -48,7 +64,7 @@ export default function EventsPage() {
       : [...severities].join(',');
 
   const { data: eventsData, isLoading } = useQuery({
-    queryKey: ['events', { search, severityParam, topic, deviceId, page }],
+    queryKey: ['events', { search, severityParam, topic, deviceId, source, page }],
     queryFn: () =>
       eventsApi
         .list({
@@ -56,6 +72,7 @@ export default function EventsPage() {
           severity: severityParam,
           topic: topic || undefined,
           deviceId: deviceId ? parseInt(deviceId) : undefined,
+          source: source || undefined,
           limit: PAGE_SIZE,
           offset: page * PAGE_SIZE,
         })
@@ -158,6 +175,27 @@ export default function EventsPage() {
             <option key={d.id} value={d.id}>{d.name}</option>
           ))}
         </select>
+
+        <div className="flex items-center gap-1 px-1 py-1 border border-gray-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800">
+          {([
+            { key: '', label: 'All' },
+            { key: 'pull', label: 'Pull' },
+            { key: 'syslog', label: 'Syslog' },
+          ] as const).map(({ key, label }) => (
+            <button
+              key={key || 'all'}
+              onClick={() => { setSource(key); setPage(0); }}
+              className={clsx(
+                'px-2.5 py-1 text-xs font-medium rounded-md transition-colors',
+                source === key
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {isLoading ? (
@@ -177,6 +215,7 @@ export default function EventsPage() {
                 <th className="table-header px-4 py-2.5 text-left w-24">Severity</th>
                 <th className="table-header px-4 py-2.5 text-left">Device</th>
                 <th className="table-header px-4 py-2.5 text-left">Topic</th>
+                <th className="table-header px-4 py-2.5 text-left w-20">Source</th>
                 <th className="table-header px-4 py-2.5 text-left">Message</th>
               </tr>
             </thead>
@@ -206,6 +245,9 @@ export default function EventsPage() {
                     </td>
                     <td className="px-4 py-2.5 text-xs font-mono text-gray-400 dark:text-slate-500">
                       {ev.topic || '—'}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {sourceBadge(ev.source)}
                     </td>
                     <td className="px-4 py-2.5 text-gray-700 dark:text-slate-300">
                       {ev.message}

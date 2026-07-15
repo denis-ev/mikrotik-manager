@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { RouterOSClient } from './RouterOSClient';
+import { mapLogSeverity } from './logSeverity';
 import { query, queryOne } from '../../config/database';
 import { getWriteApi } from '../../config/influxdb';
 import { Point } from '@influxdata/influxdb-client';
@@ -74,6 +75,10 @@ export interface DeviceRow {
   ros_version?: string;
   device_type: string;
   status: string;
+  log_source?: string;
+  syslog_source_ip?: string | null;
+  last_log_at?: string | null;
+  nolog_threshold_min?: number | null;
 }
 
 export class DeviceCollector {
@@ -696,11 +701,11 @@ export class DeviceCollector {
         }
 
         const time = this.parseLogTime(log['time'] || '');
-        const severity = this.mapLogSeverity(log['topics'] || '');
+        const severity = mapLogSeverity(log['topics'] || '');
 
         await query(
-          `INSERT INTO events (device_id, event_time, severity, topic, message, raw_json, log_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
+          `INSERT INTO events (device_id, event_time, severity, topic, message, raw_json, source, log_id)
+           VALUES ($1,$2,$3,$4,$5,$6,'pull',$7)
            ON CONFLICT (device_id, log_id) DO NOTHING`,
           [
             this.device.id,
@@ -716,9 +721,17 @@ export class DeviceCollector {
       }
 
       if (newCount > 0) {
+        // Mark that logs are flowing via the pull path (feeds the nolog watchdog).
+        await query(`UPDATE devices SET last_log_at = NOW() WHERE id = $1`, [this.device.id]);
+        // Honour the configurable retention setting instead of a hardcoded 30 days.
+        const retRow = await queryOne<{ value: number }>(
+          `SELECT value FROM app_settings WHERE key = 'retention_events_days'`
+        );
+        const retentionDays =
+          typeof retRow?.value === 'number' && retRow.value > 0 ? retRow.value : 30;
         await query(
-          `DELETE FROM events WHERE device_id = $1 AND event_time < NOW() - INTERVAL '30 days'`,
-          [this.device.id]
+          `DELETE FROM events WHERE device_id = $1 AND event_time < NOW() - ($2 || ' days')::interval`,
+          [this.device.id, retentionDays]
         );
         console.log(`[${this.device.name}] Collected ${newCount} new log entries`);
       }
@@ -762,13 +775,6 @@ export class DeviceCollector {
     } catch {
       return new Date();
     }
-  }
-
-  private mapLogSeverity(topics: string): string {
-    if (topics.includes('critical') || topics.includes('error')) return 'error';
-    if (topics.includes('warning')) return 'warning';
-    if (topics.includes('info')) return 'info';
-    return 'info';
   }
 
   // ─── MAC Scan (switch IP enrichment) ─────────────────────────────────────

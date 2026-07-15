@@ -70,6 +70,12 @@ export interface Device {
   created_at: string;
   updated_at?: string;
   tags?: { id: number; name: string; color: string }[];
+  /** How this device's logs are ingested: pulled by polling, pushed via syslog, both, or none. */
+  log_source?: string;
+  /** Timestamp of the most recent syslog message received from this device, if any. */
+  last_log_at?: string | null;
+  /** True when this device hasn't produced logs within the configured no-log threshold. */
+  nolog?: boolean;
 }
 
 export interface Tag {
@@ -182,6 +188,8 @@ export interface DeviceEvent {
   severity: EventSeverity;
   topic?: string;
   message: string;
+  /** Whether this event was collected by polling the device or pushed via syslog. */
+  source?: 'pull' | 'syslog';
 }
 
 export interface Client {

@@ -291,6 +291,11 @@ export const devicesApi = {
     api.get<{ polling_config: PollingConfig }>(`/devices/${id}/polling-config`),
   updatePollingConfig: (id: number, config: PollingConfig) =>
     api.put<{ polling_config: PollingConfig }>(`/devices/${id}/polling-config`, config),
+  updateLogConfig: (id: number, data: {
+    log_source?: 'pull' | 'syslog' | 'both' | 'none';
+    syslog_source_ip?: string | null;
+    nolog_threshold_min?: number | null;
+  }) => api.put<Device>(`/devices/${id}/log-config`, data),
 };
 
 // ─── Per-device polling config ────────────────────────────────────────────────
@@ -422,11 +427,40 @@ export const eventsApi = {
     topic?: string;
     search?: string;
     since?: string;
+    source?: 'pull' | 'syslog';
     limit?: number;
     offset?: number;
   }) =>
     api.get<{ events: DeviceEvent[]; total: number; criticalCount: number }>('/events', { params }),
   clear: (deviceId?: number) => api.delete('/events', { params: deviceId ? { deviceId } : {} }),
+};
+
+// ─── Syslog Receiver (built-in) ────────────────────────────────────────────────
+export interface SyslogReceiverStatus {
+  enabled: boolean;
+  port: number;
+  advertised_address: string;
+  stats: {
+    received: number;
+    stored: number;
+    dropped_unknown: number;
+    dropped_disabled: number;
+    dropped_ratelimited: number;
+    parse_errors: number;
+    started_at: string | null;
+  };
+  devices: {
+    device_id: number;
+    name: string;
+    ip_address: string;
+    log_source: string;
+    last_log_at: string | null;
+    received: number;
+  }[];
+}
+
+export const syslogApi = {
+  getStatus: () => api.get<SyslogReceiverStatus>('/syslog/status'),
 };
 
 // ─── Backups ──────────────────────────────────────────────────────────────────

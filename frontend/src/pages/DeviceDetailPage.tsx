@@ -9,6 +9,7 @@ import { useCanWrite } from '../hooks/useCanWrite';
 import SwitchPortDiagram from '../components/ports/SwitchPortDiagram';
 import TerminalModal from '../components/TerminalModal';
 import DeviceLocationSection from '../components/device-detail/DeviceLocationSection';
+import DeviceLoggingSection from '../components/device-detail/DeviceLoggingSection';
 import VlansTab from '../components/device-detail/VlansTab';
 import RoutingTab from '../components/device-detail/RoutingTab';
 import FirewallTab from '../components/device-detail/FirewallTab';
@@ -366,6 +367,9 @@ export default function DeviceDetailPage() {
 
           {/* Physical location, rack & notes */}
           <DeviceLocationSection device={device} />
+
+          {/* Log source selector, syslog override, nolog threshold */}
+          <DeviceLoggingSection device={device} />
         </div>
       )}
 

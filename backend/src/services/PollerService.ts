@@ -2,6 +2,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import { createRedisConnection } from '../config/redis';
 import { query } from '../config/database';
 import { DeviceCollector, DeviceRow } from './mikrotik/DeviceCollector';
+import { shouldPullLogs } from './pullLogsPolicy';
 import { Server as SocketServer } from 'socket.io';
 import { getWriteApi } from '../config/influxdb';
 import { Point } from '@influxdata/influxdb-client';
@@ -86,7 +87,9 @@ function defaultSecondsFor(cls: PollClass, globals: PollGlobals): number {
 //   - spectral requires spectral_scan_enabled AND device_type 'wireless_ap'
 //   - apscan   requires ap_scan_enabled AND device_type 'wireless_ap'
 //   - configsnap requires config_snapshot_enabled
-//   - fast/slow/logs are always eligible (device already filtered to status != 'disabled')
+//   - logs     requires the device's log_source to opt into pull (shouldPullLogs):
+//              devices on 'syslog'/'none' are served by the push path, not polled
+//   - fast/slow are always eligible (device already filtered to status != 'disabled')
 // A per-device `enabled: false` disables the class regardless of globals.
 export function resolvePollClass(
   cls: PollClass,
@@ -109,8 +112,13 @@ export function resolvePollClass(
     case 'configsnap':
       eligibleByGlobal = globals.configsnapEnabled;
       break;
+    case 'logs':
+      // Only pull logs for devices whose log_source opts in; 'syslog'/'none'
+      // devices are served by the push path and must not be polled for logs.
+      eligibleByGlobal = shouldPullLogs(device);
+      break;
     default:
-      eligibleByGlobal = true; // fast, slow, logs
+      eligibleByGlobal = true; // fast, slow
   }
   const eligible = eligibleByGlobal && cfg.enabled !== false;
 
@@ -700,6 +708,10 @@ export class PollerService {
   }
 
   private async runLogs(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    // Defensive gate: a device switched to syslog/none must not be pulled, even
+    // if a legacy logs job was queued before the switch (legacy processLogsJob
+    // delegates here). The combined path already filters via resolvePollClass.
+    if (!shouldPullLogs(device)) return;
     await collector.collectLogs();
     this.io?.emit('events:updated', { deviceId: device.id });
 
@@ -982,6 +994,9 @@ export class PollerService {
   private async processLogsJob(data: LegacyPollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
+    // Guard at the sink too: a device switched to syslog/none since the job was
+    // enqueued must not be pulled.
+    if (!shouldPullLogs(device)) return;
 
     const collector = new DeviceCollector(device);
     try {

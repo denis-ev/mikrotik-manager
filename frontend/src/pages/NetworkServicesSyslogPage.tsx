@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FileText, RefreshCw, AlertTriangle, Plus, Pencil, Trash2, X, Save,
-  CheckCircle, XCircle,
+  CheckCircle, XCircle, Radio, Copy,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { networkServicesApi, devicesApi } from '../services/api';
+import { formatDistanceToNow, parseISO } from 'date-fns';
+import { networkServicesApi, devicesApi, settingsApi, syslogApi } from '../services/api';
 import { useCanWrite } from '../hooks/useCanWrite';
+import { useAuthStore } from '../store/authStore';
 
 type NS = Record<string, string>;
 
@@ -115,19 +117,22 @@ interface ActionFormProps {
   existing?: NS;
   allDevices?: boolean;
   targetName?: string; // single target device name (single-device add)
+  // Pre-fills a new (non-edit) action's remote/port fields, e.g. from the
+  // "Use this app as target" helper on the built-in receiver card.
+  prefill?: { remote?: string; port?: string };
   onSave: (data: NS) => void;
   onClose: () => void;
   isPending: boolean;
   error?: string;
 }
 
-function ActionForm({ existing, allDevices, targetName, onSave, onClose, isPending, error }: ActionFormProps) {
+function ActionForm({ existing, allDevices, targetName, prefill, onSave, onClose, isPending, error }: ActionFormProps) {
   const isBuiltin = existing ? BUILTIN_ACTION_NAMES.includes(existing['name'] ?? '') : false;
 
-  const [name, setName]         = useState(existing?.['name'] ?? '');
+  const [name, setName]         = useState(existing?.['name'] ?? (prefill ? 'remote-syslog' : ''));
   const [type, setType]         = useState(existing?.['type'] ?? 'remote');
-  const [remote, setRemote]     = useState(existing?.['remote'] ?? '');
-  const [port, setPort]         = useState(existing?.['remote-port'] ?? '514');
+  const [remote, setRemote]     = useState(existing?.['remote'] ?? prefill?.remote ?? '');
+  const [port, setPort]         = useState(existing?.['remote-port'] ?? prefill?.port ?? '514');
   const [srcAddr, setSrcAddr]   = useState(existing?.['src-address'] ?? '');
   const [facility, setFacility] = useState(existing?.['syslog-facility'] ?? 'daemon');
   const [severity, setSeverity] = useState(existing?.['syslog-severity'] ?? 'auto');
@@ -351,11 +356,89 @@ function AddToDevice({
 
 export default function NetworkServicesSyslogPage() {
   const canWrite = useCanWrite();
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
   const qc = useQueryClient();
+
+  // ── Built-in syslog receiver: settings (admin-gated) ───────────────────────
+  const { data: appSettings } = useQuery({
+    queryKey: ['app-settings'],
+    queryFn: () => settingsApi.get().then(r => r.data),
+  });
+
+  const [recvEnabled, setRecvEnabled]     = useState(false);
+  const [recvPort, setRecvPort]           = useState('514');
+  const [recvAddress, setRecvAddress]     = useState('');
+  const [recvNologMin, setRecvNologMin]   = useState('60');
+  const [recvLoaded, setRecvLoaded]       = useState(false);
+  const [recvSaving, setRecvSaving]       = useState(false);
+  const [recvSaveMsg, setRecvSaveMsg]     = useState('');
+  const [copiedTarget, setCopiedTarget]   = useState(false);
+
+  useEffect(() => {
+    if (appSettings && !recvLoaded) {
+      setRecvEnabled(appSettings['syslog_enabled'] === true);
+      setRecvPort(String(appSettings['syslog_port'] ?? '514'));
+      setRecvAddress(String(appSettings['syslog_advertised_address'] ?? ''));
+      setRecvNologMin(String(appSettings['nolog_threshold_min'] ?? '60'));
+      setRecvLoaded(true);
+    }
+  }, [appSettings, recvLoaded]);
+
+  async function saveReceiverSettings(overrides: Record<string, unknown> = {}) {
+    setRecvSaving(true); setRecvSaveMsg('');
+    try {
+      await settingsApi.update({
+        syslog_enabled: recvEnabled,
+        syslog_port: parseInt(recvPort, 10) || 514,
+        syslog_advertised_address: recvAddress.trim(),
+        nolog_threshold_min: parseInt(recvNologMin, 10) || 60,
+        ...overrides,
+      });
+      qc.invalidateQueries({ queryKey: ['app-settings'] });
+      qc.invalidateQueries({ queryKey: ['syslog-status'] });
+      setRecvSaveMsg('Saved');
+      setTimeout(() => setRecvSaveMsg(''), 3000);
+    } catch (e) {
+      setRecvSaveMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setRecvSaving(false);
+    }
+  }
+
+  async function handleReceiverToggle(value: boolean) {
+    setRecvEnabled(value);
+    await saveReceiverSettings({ syslog_enabled: value });
+  }
+
+  // ── Built-in syslog receiver: live status ──────────────────────────────────
+  const { data: receiverStatus } = useQuery({
+    queryKey: ['syslog-status'],
+    queryFn: () => syslogApi.getStatus().then(r => r.data),
+    refetchInterval: 10_000,
+  });
+
+  function useAsTarget() {
+    if (!receiverStatus?.advertised_address) return;
+    setSaveError('');
+    setActionForm({ prefill: { remote: receiverStatus.advertised_address, port: String(receiverStatus.port) } });
+  }
+
+  async function copyTarget() {
+    if (!receiverStatus?.advertised_address) return;
+    const target = `${receiverStatus.advertised_address}:${receiverStatus.port}`;
+    try {
+      await navigator.clipboard.writeText(target);
+      setCopiedTarget(true);
+      setTimeout(() => setCopiedTarget(false), 2000);
+    } catch {
+      // clipboard API unavailable — ignore, the button still shows the value via title
+    }
+  }
 
   // Form state. `targetDeviceId` → single-device add; `allCoverage` → edit
   // across the devices that already have the row; neither → add to all.
-  const [actionForm, setActionForm] = useState<{ existing?: NS; allCoverage?: DeviceCoverage[]; targetDeviceId?: number } | null>(null);
+  const [actionForm, setActionForm] = useState<{ existing?: NS; allCoverage?: DeviceCoverage[]; targetDeviceId?: number; prefill?: { remote?: string; port?: string } } | null>(null);
   const [ruleForm, setRuleForm]     = useState<{ existing?: NS; allCoverage?: DeviceCoverage[]; targetDeviceId?: number } | null>(null);
   const [savePending, setSavePending] = useState(false);
   const [saveError, setSaveError]     = useState('');
@@ -532,6 +615,150 @@ export default function NetworkServicesSyslogPage() {
             <RefreshCw className={clsx('w-3.5 h-3.5', allFetching && 'animate-spin')} />Refresh
           </button>
         )}
+      </div>
+
+      {/* Built-in receiver */}
+      <div className="card overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex flex-wrap items-center gap-2">
+          <Radio className="w-4 h-4 text-blue-500" />
+          <h2 className="text-sm font-semibold text-gray-700 dark:text-slate-200">Built-in Receiver</h2>
+          {receiverStatus && (
+            <span className={clsx('inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium',
+              receiverStatus.enabled
+                ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                : 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400')}>
+              <span className={clsx('w-1.5 h-1.5 rounded-full', receiverStatus.enabled ? 'bg-green-500' : 'bg-gray-400')} />
+              {receiverStatus.enabled ? `Listening on udp/${receiverStatus.port}` : 'Stopped'}
+            </span>
+          )}
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <Toggle checked={recvEnabled} onChange={handleReceiverToggle} disabled={!isAdmin || recvSaving} />
+            <div>
+              <div className="text-sm font-medium text-gray-700 dark:text-slate-200">Enable built-in syslog receiver</div>
+              <p className="text-xs text-gray-400 dark:text-slate-500">
+                Accepts syslog messages pushed directly from your MikroTik devices (via a remote logging action) instead of polling.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-slate-200 mb-1">Port</label>
+              <input type="number" className="input w-full disabled:opacity-50" value={recvPort}
+                onChange={e => setRecvPort(e.target.value)} min="1" max="65535" disabled={!isAdmin} />
+              <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">
+                Must match the host port mapping (SYSLOG_PORT, default 514).
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-slate-200 mb-1">Advertised Address</label>
+              <input className="input w-full disabled:opacity-50" value={recvAddress}
+                onChange={e => setRecvAddress(e.target.value)} placeholder="192.168.1.100" disabled={!isAdmin} />
+              <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">
+                This server's IP as reachable by your devices (the Docker host IP, not the container).
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-slate-200 mb-1">No-Log Threshold (min)</label>
+              <input type="number" className="input w-full disabled:opacity-50" value={recvNologMin}
+                onChange={e => setRecvNologMin(e.target.value)} min="1" disabled={!isAdmin} />
+              <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">
+                Fleet-wide default before a device is flagged <code className="font-mono">nolog</code>. Devices can override this.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {isAdmin && (
+              <button onClick={() => saveReceiverSettings()} disabled={recvSaving}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors">
+                <Save className="w-3.5 h-3.5" />{recvSaving ? 'Saving…' : 'Save Settings'}
+              </button>
+            )}
+            {recvSaveMsg && (
+              <span className={clsx('text-sm', recvSaveMsg === 'Saved' ? 'text-green-600 dark:text-green-400' : 'text-red-500')}>{recvSaveMsg}</span>
+            )}
+          </div>
+
+          {receiverStatus?.advertised_address && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-slate-800">
+              <span className="text-xs text-gray-500 dark:text-slate-400">
+                Point routers at <span className="font-mono text-gray-700 dark:text-slate-300">{receiverStatus.advertised_address}:{receiverStatus.port}</span>:
+              </span>
+              {canWrite && (
+                <button onClick={useAsTarget}
+                  className="flex items-center gap-1 px-2.5 py-1 border border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 text-xs font-medium rounded-lg transition-colors whitespace-nowrap">
+                  <Plus className="w-3.5 h-3.5" />Use this app as target
+                </button>
+              )}
+              <button onClick={copyTarget}
+                title={`${receiverStatus.advertised_address}:${receiverStatus.port}`}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-gray-300 dark:border-slate-600 text-xs text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors whitespace-nowrap">
+                <Copy className="w-3.5 h-3.5" />{copiedTarget ? 'Copied!' : 'Copy address:port'}
+              </button>
+            </div>
+          )}
+
+          {receiverStatus?.stats && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 pt-2 border-t border-gray-100 dark:border-slate-800">
+              <div>
+                <div className="text-xs text-gray-400 dark:text-slate-500">Received</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">{receiverStatus.stats.received.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 dark:text-slate-500">Stored</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">{receiverStatus.stats.stored.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 dark:text-slate-500">Dropped (unknown)</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">{receiverStatus.stats.dropped_unknown.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 dark:text-slate-500">Dropped (disabled)</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">{receiverStatus.stats.dropped_disabled.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 dark:text-slate-500">Rate-limited</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">{receiverStatus.stats.dropped_ratelimited.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 dark:text-slate-500">Parse errors</div>
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">{receiverStatus.stats.parse_errors.toLocaleString()}</div>
+              </div>
+            </div>
+          )}
+
+          {receiverStatus && receiverStatus.devices.length > 0 && (
+            <div className="pt-2 border-t border-gray-100 dark:border-slate-800 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Device</th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">IP</th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Log Source</th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Received</th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wide">Last Log</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {receiverStatus.devices.map(d => (
+                    <tr key={d.device_id} className="border-t border-gray-100 dark:border-slate-800">
+                      <td className="px-2 py-2 font-medium text-gray-900 dark:text-white">{d.name}</td>
+                      <td className="px-2 py-2 font-mono text-xs text-gray-500 dark:text-slate-400">{d.ip_address}</td>
+                      <td className="px-2 py-2 text-gray-700 dark:text-slate-300">{d.log_source}</td>
+                      <td className="px-2 py-2 text-gray-700 dark:text-slate-300">{d.received.toLocaleString()}</td>
+                      <td className="px-2 py-2 text-gray-500 dark:text-slate-400 text-xs">
+                        {d.last_log_at ? formatDistanceToNow(parseISO(d.last_log_at), { addSuffix: true }) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
 
       {onlineDevices.length === 0 && (
@@ -765,13 +992,13 @@ export default function NetworkServicesSyslogPage() {
 
       {actionForm && (
         actionForm.targetDeviceId ? (
-          <ActionForm existing={actionForm.existing}
+          <ActionForm existing={actionForm.existing} prefill={actionForm.prefill}
             targetName={devices.find(d => d.id === actionForm.targetDeviceId)?.name}
             onSave={data => handleSingleAdd('action', data, actionForm.targetDeviceId!)}
             onClose={() => { setActionForm(null); setSaveError(''); }}
             isPending={savePending} error={saveError} />
         ) : (
-          <ActionForm allDevices existing={actionForm.existing}
+          <ActionForm allDevices existing={actionForm.existing} prefill={actionForm.prefill}
             onSave={data => handleAllDevicesSave('action', data, actionForm.allCoverage)}
             onClose={() => setActionForm(null)} isPending={false} />
         )

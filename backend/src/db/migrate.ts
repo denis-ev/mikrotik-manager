@@ -486,6 +486,18 @@ CREATE TABLE IF NOT EXISTS wireless_security_profiles (
   updated_at            TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(device_id, name)
 );
+
+-- Phase 2: syslog receiver. Events gain a source column so pull (/log print)
+-- and pushed BSD-syslog lines can be distinguished. Devices choose their log
+-- source (pull|syslog|both|none), may override the source IP the router pushes
+-- syslog from, track the last time any log arrived (for the nolog watchdog),
+-- and optionally override the global nolog threshold.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS source VARCHAR(10) NOT NULL DEFAULT 'pull';
+CREATE INDEX IF NOT EXISTS idx_events_source ON events(source, event_time DESC);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS log_source VARCHAR(10) NOT NULL DEFAULT 'pull';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS syslog_source_ip VARCHAR(45);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_log_at TIMESTAMPTZ;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS nolog_threshold_min INTEGER;
 `;
 
 const DEFAULT_SETTINGS = [
@@ -518,6 +530,10 @@ const DEFAULT_SETTINGS = [
   { key: 'netflow_accept_unknown', value: true },
   { key: 'netflow_retention_days', value: 30 },
   { key: 'netflow_daily_retention_days', value: 365 },
+  { key: 'syslog_enabled', value: false },
+  { key: 'syslog_port', value: 5514 },
+  { key: 'syslog_advertised_address', value: '' },
+  { key: 'nolog_threshold_min', value: 60 },
 ];
 
 export async function runMigrations(): Promise<void> {

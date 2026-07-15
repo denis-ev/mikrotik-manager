@@ -103,9 +103,20 @@ describe('resolvePollClass — eligibility', () => {
     expect(resolvePollClass('configsnap', dev(), { ...globals, configsnapEnabled: false }).eligible).toBe(false);
   });
 
-  it('keeps fast/slow/logs eligible regardless of device type', () => {
+  it('keeps fast/slow eligible regardless of device type', () => {
     expect(resolvePollClass('fast', dev({ device_type: 'switch' }), globals).eligible).toBe(true);
-    expect(resolvePollClass('logs', dev({ device_type: 'wireless_ap' }), globals).eligible).toBe(true);
+    expect(resolvePollClass('slow', dev({ device_type: 'wireless_ap' }), globals).eligible).toBe(true);
+  });
+
+  it('gates logs on the device log_source (pull path only)', () => {
+    // 'pull' and 'both' opt into log polling; 'syslog' and 'none' are served by
+    // the push path and must not be polled.
+    expect(resolvePollClass('logs', dev({ log_source: 'pull' }), globals).eligible).toBe(true);
+    expect(resolvePollClass('logs', dev({ log_source: 'both' }), globals).eligible).toBe(true);
+    expect(resolvePollClass('logs', dev({ log_source: 'syslog' }), globals).eligible).toBe(false);
+    expect(resolvePollClass('logs', dev({ log_source: 'none' }), globals).eligible).toBe(false);
+    // Absent log_source defaults to 'pull' (backward compatible).
+    expect(resolvePollClass('logs', dev(), globals).eligible).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { isIP } from 'net';
 import { Client as SshClient } from 'ssh2';
 import { query, queryOne } from '../config/database';
 import { requireAuth, requireWrite } from '../middleware/auth';
@@ -59,16 +60,35 @@ export function setPollerService(p: PollerService): void {
   pollerService = p;
 }
 
+// Global fallback for the "nolog" watchdog threshold (minutes). Devices may
+// override it via nolog_threshold_min; this is used when they don't.
+async function getGlobalNologThreshold(): Promise<number> {
+  const row = await queryOne<{ value: unknown }>(
+    `SELECT value FROM app_settings WHERE key = 'nolog_threshold_min'`
+  );
+  const n = Number(row?.value);
+  return Number.isFinite(n) && n > 0 ? n : 60;
+}
+
 // GET /api/devices
 router.get('/', async (_req: Request, res: Response) => {
+  const globalNolog = await getGlobalNologThreshold();
   const devices = await query(
     `SELECT id, name, ip_address, api_port, api_username, model, serial_number,
             firmware_version, ros_version, latest_ros_version, firmware_update_available,
             routerboard_upgrade_available, upgrade_firmware_version,
             device_type, status, last_seen, notes,
             location_address, location_lat::float8 AS location_lat, location_lng::float8 AS location_lng,
-            rack_name, rack_slot, created_at
-     FROM devices ORDER BY name ASC`
+            rack_name, rack_slot, created_at,
+            log_source, last_log_at, nolog_threshold_min,
+            CASE
+              WHEN log_source = 'none' THEN false
+              WHEN last_log_at IS NULL THEN true
+              WHEN last_log_at < NOW() - (COALESCE(nolog_threshold_min, $1) || ' minutes')::interval THEN true
+              ELSE false
+            END AS nolog
+     FROM devices ORDER BY name ASC`,
+    [globalNolog]
   );
 
   // Attach tags to each device
@@ -290,6 +310,7 @@ router.get('/bulk-add/jobs/:jobId', requireWrite, async (req: Request, res: Resp
 
 // GET /api/devices/:id
 router.get('/:id', async (req: Request, res: Response) => {
+  const globalNolog = await getGlobalNologThreshold();
   const device = await queryOne(
     `SELECT id, name, ip_address, api_port, api_username, ssh_port, ssh_username, model,
             serial_number, firmware_version, ros_version, latest_ros_version,
@@ -298,9 +319,16 @@ router.get('/:id', async (req: Request, res: Response) => {
             notes, location_address,
             location_lat::float8 AS location_lat,
             location_lng::float8 AS location_lng,
-            rack_name, rack_slot, created_at, updated_at
+            rack_name, rack_slot, created_at, updated_at,
+            log_source, syslog_source_ip, last_log_at, nolog_threshold_min,
+            CASE
+              WHEN log_source = 'none' THEN false
+              WHEN last_log_at IS NULL THEN true
+              WHEN last_log_at < NOW() - (COALESCE(nolog_threshold_min, $2) || ' minutes')::interval THEN true
+              ELSE false
+            END AS nolog
      FROM devices WHERE id = $1`,
-    [req.params.id]
+    [req.params.id, globalNolog]
   );
   if (!device) return res.status(404).json({ error: 'Device not found' });
   return res.json(device);
@@ -344,6 +372,76 @@ router.patch('/:id/location', requireWrite, async (req: Request, res: Response) 
     [req.params.id]
   );
   return res.json(updated);
+});
+
+// PUT /api/devices/:id/log-config — choose per-device log source + syslog options
+const LOG_SOURCE_VALUES = new Set(['pull', 'syslog', 'both', 'none']);
+router.put('/:id/log-config', requireWrite, async (req: Request, res: Response) => {
+  const existing = await queryOne<{ id: number }>(`SELECT id FROM devices WHERE id = $1`, [req.params.id]);
+  if (!existing) return res.status(404).json({ error: 'Device not found' });
+
+  const body = req.body as {
+    log_source?: unknown;
+    syslog_source_ip?: unknown;
+    nolog_threshold_min?: unknown;
+  };
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+
+  if (body.log_source !== undefined) {
+    if (typeof body.log_source !== 'string' || !LOG_SOURCE_VALUES.has(body.log_source)) {
+      return res.status(400).json({ error: 'log_source must be one of pull, syslog, both, none' });
+    }
+    sets.push(`log_source = $${idx++}`);
+    params.push(body.log_source);
+  }
+
+  if (body.syslog_source_ip !== undefined) {
+    if (body.syslog_source_ip === null || body.syslog_source_ip === '') {
+      sets.push(`syslog_source_ip = $${idx++}`);
+      params.push(null);
+    } else if (typeof body.syslog_source_ip === 'string' && isIP(body.syslog_source_ip) !== 0) {
+      sets.push(`syslog_source_ip = $${idx++}`);
+      params.push(body.syslog_source_ip);
+    } else {
+      return res.status(400).json({ error: 'syslog_source_ip must be a valid IPv4/IPv6 address or null' });
+    }
+  }
+
+  if (body.nolog_threshold_min !== undefined) {
+    if (body.nolog_threshold_min === null) {
+      sets.push(`nolog_threshold_min = $${idx++}`);
+      params.push(null);
+    } else if (
+      typeof body.nolog_threshold_min === 'number' &&
+      Number.isInteger(body.nolog_threshold_min) &&
+      body.nolog_threshold_min >= 5
+    ) {
+      sets.push(`nolog_threshold_min = $${idx++}`);
+      params.push(body.nolog_threshold_min);
+    } else {
+      return res.status(400).json({ error: 'nolog_threshold_min must be an integer >= 5 or null' });
+    }
+  }
+
+  if (sets.length === 0) {
+    return res.status(400).json({ error: 'No log-config fields provided' });
+  }
+
+  params.push(req.params.id);
+  await query(
+    `UPDATE devices SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${idx}`,
+    params
+  );
+
+  const saved = await queryOne(
+    `SELECT id AS device_id, log_source, syslog_source_ip, nolog_threshold_min
+     FROM devices WHERE id = $1`,
+    [req.params.id]
+  );
+  return res.json(saved);
 });
 
 // PUT /api/devices/:id

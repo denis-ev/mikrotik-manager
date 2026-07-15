@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { query, queryOne } from '../config/database';
 import { requireAuth, requireAdmin } from '../middleware/auth';
 import { netflowCollector } from '../services/netflow/NetflowCollector';
+import { syslogReceiver } from '../services/syslog/SyslogReceiver';
 import { validatePassword } from '../utils/passwordPolicy';
 
 const router = Router();
@@ -32,6 +33,10 @@ router.put('/', requireAdmin, async (req: Request, res: Response) => {
   // collector's periodic settings reconcile.
   if (Object.keys(updates).some((k) => k.startsWith('netflow_'))) {
     netflowCollector.reconcile().catch(() => {});
+  }
+  // Apply syslog listener changes immediately (enable/disable, port change).
+  if (Object.keys(updates).some((k) => k.startsWith('syslog_'))) {
+    syslogReceiver.reconcile().catch(() => {});
   }
   res.json({ message: 'Settings updated' });
 });
