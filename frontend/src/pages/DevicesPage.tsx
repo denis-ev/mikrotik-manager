@@ -444,7 +444,18 @@ export default function DevicesPage() {
                         <GlowDot status={device.status} />
                       </td>
                       <td className="px-4 py-[12px]">
-                        <div className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>{device.name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>{device.name}</span>
+                          {device.nolog && (
+                            <span
+                              className="mono text-[9.5px] uppercase tracking-wide px-[6px] py-[2px] rounded-full font-medium"
+                              style={{ background: 'var(--bad-bg)', color: 'var(--bad)' }}
+                              title="No logs received recently from this device"
+                            >
+                              nolog
+                            </span>
+                          )}
+                        </div>
                         {device.tags && device.tags.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-1">
                             {device.tags.map(tag => (

@@ -35,6 +35,11 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       CORS_ORIGIN: ${CORS_ORIGIN:-https://localhost,http://localhost,https://127.0.0.1,http://127.0.0.1}
       PORT: 3001
+      SYSLOG_BIND_PORT: 5514
+    ports:
+      # Syslog receiver — UDP goes straight to the backend (nginx not involved).
+      # Host port must match the syslog_port app setting (default 514).
+      - "${SYSLOG_PORT:-514}:5514/udp"
     depends_on:
       postgres:
         condition: service_healthy

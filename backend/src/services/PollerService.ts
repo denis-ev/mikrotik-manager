@@ -2,6 +2,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import { createRedisConnection } from '../config/redis';
 import { query } from '../config/database';
 import { DeviceCollector, DeviceRow } from './mikrotik/DeviceCollector';
+import { shouldPullLogs } from './pullLogsPolicy';
 import { Server as SocketServer } from 'socket.io';
 import { getWriteApi } from '../config/influxdb';
 import { Point } from '@influxdata/influxdb-client';
@@ -120,12 +121,15 @@ export class PollerService {
           await this.setTimestamp(slowKey, now);
         }
 
-        // Logs poll every 60s
-        const logsKey = `poll:logs:${device.id}`;
-        const lastLogs = await this.getTimestamp(logsKey);
-        if (now - lastLogs > 60_000) {
-          await this.scheduleDeviceSync(device.id, 'logs');
-          await this.setTimestamp(logsKey, now);
+        // Logs poll every 60s — only for devices whose log_source uses pull.
+        // Devices on syslog-only (or 'none') are served by the push path.
+        if (shouldPullLogs(device)) {
+          const logsKey = `poll:logs:${device.id}`;
+          const lastLogs = await this.getTimestamp(logsKey);
+          if (now - lastLogs > 60_000) {
+            await this.scheduleDeviceSync(device.id, 'logs');
+            await this.setTimestamp(logsKey, now);
+          }
         }
 
         // MAC scan — switches only, user-configured interval
@@ -753,6 +757,9 @@ export class PollerService {
   private async processLogsJob(data: PollJob): Promise<void> {
     const device = await this.getDevice(data.deviceId);
     if (!device) return;
+    // Guard at the sink too: a device switched to syslog/none since the job was
+    // enqueued must not be pulled.
+    if (!shouldPullLogs(device)) return;
 
     const collector = new DeviceCollector(device);
     try {

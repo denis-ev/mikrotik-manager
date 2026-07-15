@@ -24,6 +24,7 @@ import {
   stopBulkAddWorker,
 } from './services/DeviceBulkAddWorker';
 import { netflowCollector } from './services/netflow/NetflowCollector';
+import { syslogReceiver } from './services/syslog/SyslogReceiver';
 import { verifyToken, type AuthPayload } from './middleware/auth';
 import { rateLimitRedis } from './middleware/rateLimitRedis';
 import { initSecrets } from './utils/secrets';
@@ -60,6 +61,7 @@ import networkServicesRoutes from './routes/networkServices';
 import trafficAnalyticsRoutes from './routes/trafficAnalytics';
 import credentialPresetsRoutes from './routes/credentialPresets';
 import systemRoutes from './routes/system';
+import syslogRoutes from './routes/syslog';
 import { auditMiddleware } from './middleware/auditMiddleware';
 
 // ─── Secret hygiene ───────────────────────────────────────────────────────────
@@ -323,6 +325,7 @@ app.use('/api/maintenance-windows', maintenanceWindowsRoutes);
 app.use('/api/config-templates', configTemplatesRoutes);
 app.use('/api/config-history', configHistoryRoutes);
 app.use('/api/system', systemRoutes);
+app.use('/api/syslog', syslogRoutes);
 
 // ─── Error Handler ────────────────────────────────────────────────────────────
 app.use(errorHandler);
@@ -375,6 +378,10 @@ async function start(): Promise<void> {
   // NetFlow/IPFIX collector (binds its UDP socket only when netflow_enabled)
   await netflowCollector.start();
 
+  // Syslog receiver (binds its UDP socket only when syslog_enabled)
+  syslogReceiver.setSocketServer(io);
+  await syslogReceiver.start();
+
   // Firmware rollout scheduler (starts rollouts whose scheduled_at has arrived)
   firmwareOrchestrator.startScheduler();
 
@@ -391,6 +398,7 @@ async function start(): Promise<void> {
     console.log('Shutting down...');
     await stopBulkAddWorker();
     await netflowCollector.stop();
+    await syslogReceiver.stop();
     await pollerService.stop();
     await redis.quit().catch(() => {});
     await pool.end();
