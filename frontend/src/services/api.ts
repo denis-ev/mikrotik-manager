@@ -555,13 +555,21 @@ export interface FirmwareRollout {
   halt_on_failure: boolean; pre_backup: boolean;
   scheduled_at: string | null; started_at: string | null; finished_at: string | null; created_at: string;
   device_count?: number; success_count?: number; failed_count?: number;
+  target_version?: string | null; delivery?: 'fetch' | 'upload';
+  do_routerboard?: boolean; allow_downgrade?: boolean;
 }
 export interface FirmwareRolloutDevice {
   id: number; rollout_id: number; device_id: number; wave: number;
-  status: 'pending' | 'backing_up' | 'upgrading' | 'rebooting' | 'verifying' | 'success' | 'failed' | 'skipped';
+  status: 'pending' | 'backing_up' | 'fetching' | 'upgrading' | 'rebooting' | 'verifying' | 'success' | 'failed' | 'skipped';
   from_version: string | null; to_version: string | null; error: string | null;
   started_at: string | null; finished_at: string | null;
   device_name: string; device_type: string; model: string | null;
+  routerboard_status?: null | 'upgrading' | 'success' | 'failed' | 'skipped';
+  arch?: string | null;
+}
+export interface FirmwareChannelVersion {
+  channel: 'stable' | 'testing' | 'long-term';
+  latest: string | null;
 }
 
 export const firmwareApi = {
@@ -570,10 +578,14 @@ export const firmwareApi = {
   checkAll: () =>
     api.post<{ results: { name: string; ok: boolean; installed?: string; latest?: string; available?: boolean; error?: string }[] }>(
       '/firmware/check-all', undefined, { timeout: 180_000 }),
+  getVersions: () =>
+    api.get<{ channels: FirmwareChannelVersion[] }>('/firmware/versions'),
   createRollout: (data: {
     name: string; halt_on_failure: boolean; pre_backup: boolean;
     scheduled_at?: string | null; start?: boolean;
     devices: { device_id: number; wave: number }[];
+    target_version?: string | null; delivery?: 'fetch' | 'upload';
+    do_routerboard?: boolean; allow_downgrade?: boolean;
   }) => api.post<{ id: number }>('/firmware/rollouts', data),
   listRollouts: () => api.get<FirmwareRollout[]>('/firmware/rollouts'),
   getRollout: (id: number) =>
