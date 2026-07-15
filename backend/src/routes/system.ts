@@ -1,12 +1,27 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { requireAuth } from '../middleware/auth';
 import { query } from '../config/database';
 
 const router = Router();
 router.use(requireAuth);
 
-const CURRENT_VERSION = process.env.npm_package_version || '0.0.0';
+// The container runs `node dist/index.js` (not via npm), so npm_package_version
+// is unset there — read the bundled package.json instead, falling back to it.
+// Without this, current stays "0.0.0" and every release looks like an update.
+function resolveCurrentVersion(): string {
+  if (process.env.npm_package_version) return process.env.npm_package_version;
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as { version?: string };
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const CURRENT_VERSION = resolveCurrentVersion();
 const RAW_URL = 'https://raw.githubusercontent.com/2GT-Media-Group-LLC/mikrotik-manager/main/frontend/package.json';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 

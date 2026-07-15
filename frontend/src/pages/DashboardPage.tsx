@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { metricsApi, eventsApi, devicesApi, clientsApi, trafficApi, operationsApi, topologyApi } from '../services/api';
+import { metricsApi, eventsApi, devicesApi, clientsApi, trafficApi, operationsApi, topologyApi, systemApi } from '../services/api';
 import type { OpsAttentionItem, OpsCapacityRow, OpsActivityItem } from '../services/api';
 import TerminalModal from '../components/TerminalModal';
 import { useSocket } from '../hooks/useSocket';
@@ -611,6 +611,14 @@ function OperationsView({
   const capacity: OpsCapacityRow[] = insights?.capacity ?? [];
   const activity: OpsActivityItem[] = insights?.activity ?? [];
 
+  // Platform update availability (checked against GitHub, cached server-side)
+  const { data: versionInfo } = useQuery({
+    queryKey: ['version-check'],
+    queryFn: () => systemApi.versionCheck().then(r => r.data),
+    staleTime: 60 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+
   // Fleet security posture rollup (live per-device; cached 5 min, lazy)
   const { data: posture } = useQuery({
     queryKey: ['ops-security', onlineDevices.map(d => d.id).join(',')],
@@ -723,6 +731,32 @@ function OperationsView({
           </div>
         </div>
       </div>
+
+      {/* Platform update available */}
+      {versionInfo?.update_available && versionInfo.latest && (
+        <div className="card flex items-center gap-3 px-5 py-[13px]" style={{ borderLeft: '3px solid var(--info)' }}>
+          <ArrowUpCircle className="w-[18px] h-[18px] flex-shrink-0" style={{ color: 'var(--info)' }} />
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>
+              Platform update available — v{versionInfo.latest}
+            </div>
+            <div className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
+              You're on v{versionInfo.current}. Run{' '}
+              <code className="mono text-[11px]" style={{ color: 'var(--ink-2)' }}>docker compose pull &amp;&amp; docker compose up -d</code>{' '}
+              to update.
+            </div>
+          </div>
+          <a
+            href="https://github.com/2GT-Media-Group-LLC/mikrotik-manager/releases"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[12px] font-medium flex-shrink-0 hover:underline"
+            style={{ color: 'var(--info)' }}
+          >
+            Release notes →
+          </a>
+        </div>
+      )}
 
       {/* Things to handle + Quick actions */}
       <div className="grid gap-4" style={{ gridTemplateColumns: '1.3fr 1fr' }}>
