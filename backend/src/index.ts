@@ -62,6 +62,7 @@ import trafficAnalyticsRoutes from './routes/trafficAnalytics';
 import credentialPresetsRoutes from './routes/credentialPresets';
 import systemRoutes from './routes/system';
 import syslogRoutes from './routes/syslog';
+import scriptsRoutes from './routes/scripts';
 import { auditMiddleware } from './middleware/auditMiddleware';
 
 // ─── Secret hygiene ───────────────────────────────────────────────────────────
@@ -326,6 +327,7 @@ app.use('/api/config-templates', configTemplatesRoutes);
 app.use('/api/config-history', configHistoryRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/syslog', syslogRoutes);
+app.use('/api/scripts', scriptsRoutes);
 
 // ─── Error Handler ────────────────────────────────────────────────────────────
 app.use(errorHandler);
@@ -368,6 +370,8 @@ async function start(): Promise<void> {
   // Start poller
   const pollerService = new PollerService();
   pollerService.setSocketServer(io);
+  const { ScriptRegistry } = await import('./services/ScriptRegistry');
+  ScriptRegistry.setSocketServer(io);
   setDevicesPoller(pollerService);
   setBulkAddPollerService(pollerService);
   setTopologyPoller(pollerService);

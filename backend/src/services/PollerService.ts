@@ -11,11 +11,11 @@ import { cronMatchesNow } from '../utils/cron';
 
 // Poll classes that a combined job can run over a single connection, in the
 // order they execute on the device.
-export type PollClass = 'fast' | 'slow' | 'logs' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+export type PollClass = 'fast' | 'slow' | 'logs' | 'macscan' | 'spectral' | 'apscan' | 'configsnap' | 'scripts';
 
 // Sequential run order inside a combined job: cheap/frequent classes first,
 // expensive scans last so a slow scan never delays the fast metrics.
-const RUN_ORDER: PollClass[] = ['fast', 'logs', 'slow', 'macscan', 'configsnap', 'apscan', 'spectral'];
+const RUN_ORDER: PollClass[] = ['fast', 'logs', 'slow', 'macscan', 'configsnap', 'scripts', 'apscan', 'spectral'];
 
 // The scheduler ticks every 30s. Interval gates are compared with half a tick of
 // tolerance so a class configured at exactly the tick interval (e.g. fast=30s)
@@ -50,6 +50,7 @@ export interface PollGlobals {
   apscan: number;           // seconds
   configsnapEnabled: boolean;
   configsnap: number;       // seconds
+  scripts: number;          // seconds
 }
 
 export interface ResolvedPollClass {
@@ -63,7 +64,7 @@ export interface ResolvedPollClass {
 // new combined job that runs several classes over one connection.
 type LegacyPollJob = {
   deviceId: number;
-  type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+  type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan' | 'configsnap' | 'scripts';
 };
 type CombinedPollJob = { type: 'combined'; deviceId: number; classes: PollClass[] };
 type PollJob = LegacyPollJob | CombinedPollJob;
@@ -78,6 +79,7 @@ function defaultSecondsFor(cls: PollClass, globals: PollGlobals): number {
     case 'spectral': return globals.spectral;
     case 'apscan': return globals.apscan;
     case 'configsnap': return globals.configsnap;
+    case 'scripts': return globals.scripts;
   }
 }
 
@@ -89,6 +91,7 @@ function defaultSecondsFor(cls: PollClass, globals: PollGlobals): number {
 //   - configsnap requires config_snapshot_enabled
 //   - logs     requires the device's log_source to opt into pull (shouldPullLogs):
 //              devices on 'syslog'/'none' are served by the push path, not polled
+//   - scripts   is always eligible (script/scheduler inventory runs on all device types)
 //   - fast/slow are always eligible (device already filtered to status != 'disabled')
 // A per-device `enabled: false` disables the class regardless of globals.
 export function resolvePollClass(
@@ -118,7 +121,7 @@ export function resolvePollClass(
       eligibleByGlobal = shouldPullLogs(device);
       break;
     default:
-      eligibleByGlobal = true; // fast, slow
+      eligibleByGlobal = true; // fast, slow, scripts (eligible for all device types)
   }
   const eligible = eligibleByGlobal && cfg.enabled !== false;
 
@@ -200,6 +203,8 @@ export class PollerService {
       await this.slowQueue.add('device-apscan', jobData, { attempts: 1 });
     } else if (type === 'configsnap') {
       await this.slowQueue.add('device-configsnap', jobData, { attempts: 1 });
+    } else if (type === 'scripts') {
+      await this.slowQueue.add('device-scripts', jobData, { attempts: 1 });
     }
   }
 
@@ -235,6 +240,7 @@ export class PollerService {
         apscan: ((appSettings['ap_scan_interval_hours'] as number) || 24) * 3_600,
         configsnapEnabled: appSettings['config_snapshot_enabled'] !== false,
         configsnap: ((appSettings['config_snapshot_interval_min'] as number) || 60) * 60,
+        scripts: ((appSettings['script_inventory_interval_min'] as number) || 360) * 60,
       };
 
       const devices = await query<PollerDeviceRow>(
@@ -386,7 +392,8 @@ export class PollerService {
                        'ap_scan_interval_hours', 'backup_schedule_enabled',
                        'backup_schedule_cron', 'polling_fast_interval',
                        'polling_slow_interval', 'polling_logs_interval',
-                       'config_snapshot_enabled', 'config_snapshot_interval_min')`
+                       'config_snapshot_enabled', 'config_snapshot_interval_min',
+                       'script_inventory_interval_min')`
       );
       const map: Record<string, unknown> = {};
       for (const row of rows) map[row.key] = row.value;
@@ -659,6 +666,7 @@ export class PollerService {
             case 'slow': await this.runSlow(collector, device); break;
             case 'macscan': await this.runMacScan(collector, device); break;
             case 'configsnap': await this.runConfigSnap(collector, device); break;
+            case 'scripts': await this.runScripts(collector, device); break;
             case 'apscan': await this.runApScan(collector, device); break;
             case 'spectral': await this.runSpectral(collector, device); break;
           }
@@ -789,6 +797,13 @@ export class PollerService {
 
   private async runConfigSnap(collector: DeviceCollector, _device: DeviceRow): Promise<void> {
     await collector.snapshotConfig('scheduled');
+  }
+
+  // Script & scheduler inventory — capture /system script + /system scheduler.
+  // The collect step dedups by content hash and reconciles managed-script links.
+  private async runScripts(collector: DeviceCollector, device: DeviceRow): Promise<void> {
+    await collector.collectScripts();
+    this.io?.emit('scripts:updated', { deviceId: device.id });
   }
 
   // Shared online-transition side effects: fire device_online, close the open
@@ -966,6 +981,21 @@ export class PollerService {
     }
   }
 
+  private async processScriptsJob(data: LegacyPollJob): Promise<void> {
+    const device = await this.getDevice(data.deviceId);
+    if (!device) return;
+
+    const collector = new DeviceCollector(device);
+    try {
+      await collector.connect();
+      await this.runScripts(collector, device);
+    } catch (err) {
+      console.error(`[Poller] Script inventory failed for ${device.name}:`, (err as Error).message);
+    } finally {
+      collector.disconnect();
+    }
+  }
+
   private async processSlowJob(data: LegacyPollJob): Promise<void> {
     if (data.type === 'spectral') {
       return this.processSpectralJob(data);
@@ -975,6 +1005,9 @@ export class PollerService {
     }
     if (data.type === 'configsnap') {
       return this.processConfigSnapJob(data);
+    }
+    if (data.type === 'scripts') {
+      return this.processScriptsJob(data);
     }
 
     const device = await this.getDevice(data.deviceId);

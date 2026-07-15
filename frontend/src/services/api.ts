@@ -299,7 +299,7 @@ export const devicesApi = {
 };
 
 // ─── Per-device polling config ────────────────────────────────────────────────
-export type PollingClass = 'fast' | 'slow' | 'logs' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+export type PollingClass = 'fast' | 'slow' | 'logs' | 'macscan' | 'spectral' | 'apscan' | 'configsnap' | 'scripts';
 export interface PollingClassConfig {
   mode?: 'interval' | 'cron';
   seconds?: number;
@@ -1176,6 +1176,151 @@ export const configTemplatesApi = {
       `/config-templates/${id}/apply`,
       { device_ids }
     ),
+};
+
+// ─── Scripts & Schedulers ──────────────────────────────────────────────────────
+export type ScriptSyncStatus = 'unlinked' | 'in_sync' | 'drifted' | 'stale' | 'push_failed';
+export type ScriptKind = 'script' | 'scheduler';
+export type ScriptLinkStrategy = 'push_managed' | 'adopt_device_version';
+
+export interface ScriptSchedule {
+  interval?: string;
+  start_date?: string;
+  start_time?: string;
+}
+
+export interface ManagedScriptDevice {
+  device_script_id: number;
+  device_id: number;
+  device_name: string;
+  sync_status: ScriptSyncStatus;
+  last_seen: string | null;
+  name: string;
+}
+
+/** Shape returned by adopt/create — not yet joined with its device links. */
+export interface ManagedScriptRecord {
+  id: number;
+  marker_id: string;
+  kind: ScriptKind;
+  name: string;
+  source: string;
+  source_hash: string;
+  /** Comma-separated RouterOS policy list, e.g. "read,write,test" (native API format). */
+  policy: string | null;
+  schedule: ScriptSchedule | null;
+  description: string | null;
+  updated_at: string;
+}
+
+export interface ManagedScript extends ManagedScriptRecord {
+  devices: ManagedScriptDevice[];
+}
+
+export interface ScriptSuggestion {
+  device_script_id: number;
+  device_id: number;
+  device_name: string;
+  kind: ScriptKind;
+  name: string;
+  managed_script_id: number;
+  managed_name: string;
+}
+
+export interface ScriptCandidateItem {
+  device_script_id: number;
+  device_id: number;
+  device_name: string;
+  name: string;
+}
+
+export interface ScriptCandidate {
+  kind: ScriptKind;
+  source_hash: string;
+  count: number;
+  name: string;
+  items: ScriptCandidateItem[];
+}
+
+export interface UnlinkedScript {
+  id: number;
+  device_id: number;
+  device_name: string;
+  kind: ScriptKind;
+  name: string;
+  comment: string | null;
+  disabled: boolean;
+  source_hash: string;
+  last_seen: string | null;
+  orphaned_marker: string | null;
+}
+
+export interface ScriptsOverview {
+  managed: ManagedScript[];
+  suggestions: ScriptSuggestion[];
+  candidates: ScriptCandidate[];
+  unlinked: UnlinkedScript[];
+}
+
+export interface DeviceScriptRow {
+  id: number;
+  kind: ScriptKind;
+  name: string;
+  source: string;
+  comment: string | null;
+  policy: string | null;
+  schedule: ScriptSchedule | null;
+  disabled: boolean;
+  run_count: number | null;
+  last_started: string | null;
+  sync_status: ScriptSyncStatus;
+  managed_script_id: number | null;
+  source_hash: string;
+  last_seen: string | null;
+}
+
+export interface ScriptLinkResult {
+  device_id: number;
+  ok: boolean;
+  error?: string;
+}
+
+export const scriptsApi = {
+  list: () => api.get<ScriptsOverview>('/scripts'),
+  getForDevice: (deviceId: number) =>
+    api.get<{ scripts: DeviceScriptRow[] }>(`/scripts/devices/${deviceId}`),
+  // Adopt an existing unlinked device script as a new managed script.
+  adopt: (deviceScriptId: number) =>
+    api.post<ManagedScriptRecord>('/scripts/managed', { deviceScriptId }),
+  // Create a brand-new managed script/scheduler (not yet linked to any device).
+  createManaged: (data: {
+    kind: ScriptKind;
+    name: string;
+    source: string;
+    /** Comma-separated RouterOS policy list, e.g. "read,write,test". */
+    policy?: string;
+    schedule?: ScriptSchedule;
+    description?: string;
+  }) => api.post<ManagedScriptRecord>('/scripts/managed', data),
+  link: (id: number, deviceScriptIds: number[], strategy?: ScriptLinkStrategy) =>
+    api.post<{ results: ScriptLinkResult[] }>(`/scripts/managed/${id}/link`, { deviceScriptIds, strategy }),
+  update: (
+    id: number,
+    data: {
+      source?: string;
+      policy?: string;
+      schedule?: ScriptSchedule;
+      description?: string;
+      name?: string;
+      expected_updated_at: string;
+    }
+  ) => api.put<{ managed: ManagedScript; results: ScriptLinkResult[] }>(`/scripts/managed/${id}`, data),
+  push: (id: number, deviceIds?: number[]) =>
+    api.post<{ results: ScriptLinkResult[] }>(`/scripts/managed/${id}/push`, { deviceIds }),
+  remove: (id: number, remote: 'keep' | 'strip-marker' | 'delete') =>
+    api.delete<{ results: ScriptLinkResult[] }>(`/scripts/managed/${id}`, { params: { remote } }),
+  refreshDevice: (deviceId: number) =>
+    api.post<{ scripts: DeviceScriptRow[] }>(`/scripts/devices/${deviceId}/refresh`),
 };
 
 export default api;

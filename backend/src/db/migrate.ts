@@ -498,6 +498,49 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS log_source VARCHAR(10) NOT NULL DEF
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS syslog_source_ip VARCHAR(45);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_log_at TIMESTAMPTZ;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS nolog_threshold_min INTEGER;
+
+-- ─── RouterOS script & scheduler management (Phase 3) ───────────────────────
+-- Fleet-level "managed script": one canonical source that can be pushed to many
+-- devices. Identity across devices is tracked by marker_id (written into the
+-- RouterOS comment field only on explicit user actions).
+CREATE TABLE IF NOT EXISTS managed_scripts (
+  id            SERIAL PRIMARY KEY,
+  marker_id     VARCHAR(12) UNIQUE NOT NULL,
+  kind          VARCHAR(12) NOT NULL DEFAULT 'script',
+  name          VARCHAR(255) NOT NULL,
+  source        TEXT NOT NULL,
+  source_hash   VARCHAR(64) NOT NULL,
+  policy        VARCHAR(255),
+  schedule      JSONB,
+  description   TEXT,
+  updated_by    INTEGER REFERENCES users(id),
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Per-device inventory of every /system script and /system scheduler entry.
+-- Populated by passive polling; managed_script_id links a row to a fleet script.
+CREATE TABLE IF NOT EXISTS device_scripts (
+  id                 SERIAL PRIMARY KEY,
+  device_id          INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  kind               VARCHAR(12) NOT NULL DEFAULT 'script',
+  ros_id             VARCHAR(20),
+  name               VARCHAR(255) NOT NULL,
+  source             TEXT NOT NULL,
+  source_hash        VARCHAR(64) NOT NULL,
+  comment            TEXT,
+  policy             VARCHAR(255),
+  schedule           JSONB,
+  run_count          INTEGER,
+  last_started       TIMESTAMPTZ,
+  disabled           BOOLEAN DEFAULT FALSE,
+  managed_script_id  INTEGER REFERENCES managed_scripts(id) ON DELETE SET NULL,
+  sync_status        VARCHAR(16) NOT NULL DEFAULT 'unlinked',
+  last_seen          TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(device_id, kind, name)
+);
+CREATE INDEX IF NOT EXISTS idx_device_scripts_source_hash ON device_scripts(source_hash);
+CREATE INDEX IF NOT EXISTS idx_device_scripts_managed ON device_scripts(managed_script_id);
 `;
 
 const DEFAULT_SETTINGS = [
@@ -534,6 +577,7 @@ const DEFAULT_SETTINGS = [
   { key: 'syslog_port', value: 5514 },
   { key: 'syslog_advertised_address', value: '' },
   { key: 'nolog_threshold_min', value: 60 },
+  { key: 'script_inventory_interval_min', value: 360 },
 ];
 
 export async function runMigrations(): Promise<void> {

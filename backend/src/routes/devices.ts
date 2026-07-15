@@ -1285,7 +1285,7 @@ router.put('/:id/system-config', requireWrite, async (req: Request, res: Respons
 // devices.polling_config is a JSONB map of poll-class → override. Any class or
 // field left out falls back to the global default from app_settings; setting
 // enabled:false disables that class's poller for this device only.
-const POLLING_CLASSES = ['fast', 'slow', 'logs', 'macscan', 'spectral', 'apscan', 'configsnap'] as const;
+const POLLING_CLASSES = ['fast', 'slow', 'logs', 'macscan', 'spectral', 'apscan', 'configsnap', 'scripts'] as const;
 type PollingClass = typeof POLLING_CLASSES[number];
 const POLLING_ENTRY_FIELDS = ['mode', 'seconds', 'cron', 'enabled'] as const;
 

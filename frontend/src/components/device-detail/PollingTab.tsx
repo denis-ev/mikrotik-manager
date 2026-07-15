@@ -27,6 +27,7 @@ const POLL_CLASSES: { key: PollingClass; label: string; description: string; def
   { key: 'spectral', label: 'Spectral scan', description: 'Wireless spectral history scan', defaultSeconds: 300 },
   { key: 'apscan', label: 'AP scan', description: 'Wireless AP/neighbor scan', defaultSeconds: 86400 },
   { key: 'configsnap', label: 'Config snapshot', description: 'Periodic exported config snapshot for history/diff', defaultSeconds: 3600 },
+  { key: 'scripts', label: 'Scripts inventory', description: 'Inventory of /system script + /system scheduler entries — 6h default', defaultSeconds: 21600 },
 ];
 
 function emptyRow(defaultSeconds: number): RowState {

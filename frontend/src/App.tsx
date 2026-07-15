@@ -25,6 +25,7 @@ import NetworkServicesNetflowPage from './pages/NetworkServicesNetflowPage';
 import NetworkServicesDiscoveryPage from './pages/NetworkServicesDiscoveryPage';
 import TrafficAnalyticsPage from './pages/TrafficAnalyticsPage';
 import SecurityPage from './pages/SecurityPage';
+import ScriptsPage from './pages/ScriptsPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="topology" element={<TopologyPage />} />
           <Route path="backups" element={<BackupsPage />} />
           <Route path="firmware" element={<FirmwarePage />} />
+          <Route path="scripts" element={<ScriptsPage />} />
           <Route path="settings" element={<SettingsPage />} />
           {/* Legacy routes — consolidated in the v0.16.4 UI reorganization */}
           <Route path="switches" element={<Navigate to="/devices?type=SW" replace />} />

@@ -24,6 +24,7 @@ const globals: PollGlobals = {
   apscan: 24 * 3600,
   configsnapEnabled: true,
   configsnap: 60 * 60,
+  scripts: 6 * 3600,
 };
 
 function dev(overrides: Partial<PollerDeviceRow> = {}): PollerDeviceRow {
@@ -106,6 +107,20 @@ describe('resolvePollClass — eligibility', () => {
   it('keeps fast/slow eligible regardless of device type', () => {
     expect(resolvePollClass('fast', dev({ device_type: 'switch' }), globals).eligible).toBe(true);
     expect(resolvePollClass('slow', dev({ device_type: 'wireless_ap' }), globals).eligible).toBe(true);
+  });
+
+  it('keeps scripts eligible for all device types and disables only via per-device enabled:false', () => {
+    expect(resolvePollClass('scripts', dev({ device_type: 'router' }), globals).eligible).toBe(true);
+    expect(resolvePollClass('scripts', dev({ device_type: 'switch' }), globals).eligible).toBe(true);
+    expect(resolvePollClass('scripts', dev({ device_type: 'wireless_ap' }), globals).eligible).toBe(true);
+    const cfg: PollingConfig = { scripts: { enabled: false } };
+    expect(resolvePollClass('scripts', dev({ polling_config: cfg }), globals).eligible).toBe(false);
+  });
+
+  it('resolves the scripts global cadence when the device has no override', () => {
+    expect(resolvePollClass('scripts', dev(), globals)).toEqual({
+      eligible: true, mode: 'interval', seconds: 6 * 3600,
+    });
   });
 
   it('gates logs on the device log_source (pull path only)', () => {
