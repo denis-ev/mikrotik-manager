@@ -9,7 +9,7 @@ import { alertService } from './AlertService';
 
 interface PollJob {
   deviceId: number;
-  type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan' | 'configsnap';
+  type: 'fast' | 'slow' | 'logs' | 'full' | 'macscan' | 'spectral' | 'apscan' | 'configsnap' | 'scripts';
 }
 
 export class PollerService {
@@ -75,6 +75,8 @@ export class PollerService {
       await this.slowQueue.add('device-apscan', jobData, { attempts: 1 });
     } else if (type === 'configsnap') {
       await this.slowQueue.add('device-configsnap', jobData, { attempts: 1 });
+    } else if (type === 'scripts') {
+      await this.slowQueue.add('device-scripts', jobData, { attempts: 1 });
     }
   }
 
@@ -102,6 +104,7 @@ export class PollerService {
       const backupScheduleCron    = (appSettings['backup_schedule_cron'] as string) || '0 2 * * *';
       const configSnapEnabled      = appSettings['config_snapshot_enabled'] !== false;
       const configSnapIntervalMin  = (appSettings['config_snapshot_interval_min'] as number) || 60;
+      const scriptInvIntervalMin   = (appSettings['script_inventory_interval_min'] as number) || 360;
 
       const devices = await query<DeviceRow>(
         `SELECT * FROM devices WHERE status != 'disabled'`
@@ -170,6 +173,16 @@ export class PollerService {
             // snapshot honours the configured cadence rather than the default TTL.
             await this.setTimestamp(configKey, now, configSnapIntervalMin * 60 + 120);
           }
+        }
+
+        // Script & scheduler inventory — capture /system script + /system scheduler
+        // fleet-wide, user-configured interval (default 360min). The collect step
+        // dedups by content hash and reconciles managed-script links.
+        const scriptsKey = `poll:scripts:${device.id}`;
+        const lastScripts = await this.getTimestamp(scriptsKey);
+        if (now - lastScripts > scriptInvIntervalMin * 60_000) {
+          await this.scheduleDeviceSync(device.id, 'scripts');
+          await this.setTimestamp(scriptsKey, now, scriptInvIntervalMin * 60 + 120);
         }
       }
 
@@ -254,7 +267,7 @@ export class PollerService {
                        'retention_clients_days', 'spectral_scan_enabled',
                        'spectral_scan_interval_hours', 'ap_scan_enabled',
                        'ap_scan_interval_hours', 'backup_schedule_enabled',
-                       'backup_schedule_cron')`
+                       'backup_schedule_cron', 'script_inventory_interval_min')`
       );
       const map: Record<string, unknown> = {};
       for (const row of rows) map[row.key] = row.value;
@@ -702,6 +715,22 @@ export class PollerService {
     }
   }
 
+  private async processScriptsJob(data: PollJob): Promise<void> {
+    const device = await this.getDevice(data.deviceId);
+    if (!device) return;
+
+    const collector = new DeviceCollector(device);
+    try {
+      await collector.connect();
+      await collector.collectScripts();
+      this.io?.emit('scripts:updated', { deviceId: device.id });
+    } catch (err) {
+      console.error(`[Poller] Script inventory failed for ${device.name}:`, (err as Error).message);
+    } finally {
+      collector.disconnect();
+    }
+  }
+
   private async processSlowJob(data: PollJob): Promise<void> {
     if (data.type === 'spectral') {
       return this.processSpectralJob(data);
@@ -711,6 +740,9 @@ export class PollerService {
     }
     if (data.type === 'configsnap') {
       return this.processConfigSnapJob(data);
+    }
+    if (data.type === 'scripts') {
+      return this.processScriptsJob(data);
     }
 
     const device = await this.getDevice(data.deviceId);

@@ -6,6 +6,7 @@ import { Point } from '@influxdata/influxdb-client';
 import { decrypt } from '../../utils/crypto';
 import { lookupVendor } from '../../utils/oui';
 import { buildServerArpMap } from '../../utils/serverArp';
+import { hashSource } from '../../utils/scriptIdentity';
 import { BackupService } from '../BackupService';
 import { alertService } from '../AlertService';
 
@@ -1906,6 +1907,239 @@ export class DeviceCollector {
 
   async removeAddressListEntry(id: string): Promise<void> {
     await this.client.execute('/ip/firewall/address-list/remove', { '.id': id });
+  }
+
+  // ─── RouterOS scripts & schedulers ──────────────────────────────────────────
+
+  async getScripts(): Promise<Record<string, string>[]> {
+    return this.client.execute('/system/script/print');
+  }
+
+  async getSchedulers(): Promise<Record<string, string>[]> {
+    return this.client.execute('/system/scheduler/print');
+  }
+
+  /**
+   * Resolve a script/scheduler's volatile RouterOS `.id` (hex like `*3`) from its
+   * stable name, immediately before a set/remove. RouterOS `.id`s are reassigned
+   * across reboots and edits, so we never cache them — always re-resolve.
+   */
+  private async resolveByName(printPath: string, name: string): Promise<string> {
+    const rows = await this.client.execute(printPath, {}, [`?name=${name}`]);
+    const id = rows.find((r) => r['name'] === name)?.['.id'] ?? rows[0]?.['.id'];
+    if (!id) throw new Error(`'${name}' not found on ${this.device.name}`);
+    return id;
+  }
+
+  async addScript(fields: { name: string; source: string; policy?: string; comment?: string }): Promise<void> {
+    const params: Record<string, string> = { name: fields.name, source: fields.source };
+    if (fields.policy) params.policy = fields.policy;
+    if (fields.comment !== undefined) params.comment = fields.comment;
+    await this.client.execute('/system/script/add', params);
+  }
+
+  async setScript(
+    name: string,
+    fields: { name?: string; source?: string; policy?: string; comment?: string }
+  ): Promise<void> {
+    const id = await this.resolveByName('/system/script/print', name);
+    const params: Record<string, string> = { numbers: id };
+    if (fields.name !== undefined) params.name = fields.name;
+    if (fields.source !== undefined) params.source = fields.source;
+    if (fields.policy !== undefined) params.policy = fields.policy;
+    if (fields.comment !== undefined) params.comment = fields.comment;
+    await this.client.execute('/system/script/set', params);
+  }
+
+  async removeScript(name: string): Promise<void> {
+    const id = await this.resolveByName('/system/script/print', name);
+    await this.client.execute('/system/script/remove', { numbers: id });
+  }
+
+  async addScheduler(fields: {
+    name: string; onEvent?: string; interval?: string; startDate?: string;
+    startTime?: string; policy?: string; comment?: string; disabled?: boolean;
+  }): Promise<void> {
+    const params: Record<string, string> = { name: fields.name };
+    if (fields.onEvent !== undefined) params['on-event'] = fields.onEvent;
+    if (fields.interval !== undefined) params.interval = fields.interval;
+    if (fields.startDate !== undefined) params['start-date'] = fields.startDate;
+    if (fields.startTime !== undefined) params['start-time'] = fields.startTime;
+    if (fields.policy !== undefined) params.policy = fields.policy;
+    if (fields.comment !== undefined) params.comment = fields.comment;
+    if (fields.disabled !== undefined) params.disabled = fields.disabled ? 'yes' : 'no';
+    await this.client.execute('/system/scheduler/add', params);
+  }
+
+  async setScheduler(
+    name: string,
+    fields: {
+      name?: string; onEvent?: string; interval?: string; startDate?: string;
+      startTime?: string; policy?: string; comment?: string; disabled?: boolean;
+    }
+  ): Promise<void> {
+    const id = await this.resolveByName('/system/scheduler/print', name);
+    const params: Record<string, string> = { numbers: id };
+    if (fields.name !== undefined) params.name = fields.name;
+    if (fields.onEvent !== undefined) params['on-event'] = fields.onEvent;
+    if (fields.interval !== undefined) params.interval = fields.interval;
+    if (fields.startDate !== undefined) params['start-date'] = fields.startDate;
+    if (fields.startTime !== undefined) params['start-time'] = fields.startTime;
+    if (fields.policy !== undefined) params.policy = fields.policy;
+    if (fields.comment !== undefined) params.comment = fields.comment;
+    if (fields.disabled !== undefined) params.disabled = fields.disabled ? 'yes' : 'no';
+    await this.client.execute('/system/scheduler/set', params);
+  }
+
+  async removeScheduler(name: string): Promise<void> {
+    const id = await this.resolveByName('/system/scheduler/print', name);
+    await this.client.execute('/system/scheduler/remove', { numbers: id });
+  }
+
+  /**
+   * Best-effort parse of a RouterOS date/time string (e.g. `jul/15/2026 10:30:45`,
+   * `jul/15 10:30:45`, `2026-07-15 10:30:45`, or `10:30:45`) into a Date. Returns
+   * null when the field is empty or unparseable so DB writes never fail.
+   */
+  private static parseRosDateTime(value: string | undefined): Date | null {
+    if (!value) return null;
+    const v = value.trim();
+    if (!v || v.toLowerCase() === 'never') return null;
+    const months: Record<string, string> = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+    };
+    try {
+      // mon/dd[/yyyy] hh:mm:ss
+      let m = v.match(/^([a-z]{3})\/(\d{1,2})(?:\/(\d{4}))?\s+(\d{1,2}:\d{2}:\d{2})$/i);
+      if (m) {
+        const month = months[m[1].toLowerCase()];
+        if (!month) return null;
+        const year = m[3] ?? String(new Date().getFullYear());
+        const d = new Date(`${year}-${month}-${m[2].padStart(2, '0')}T${m[4]}Z`);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      // yyyy-mm-dd hh:mm:ss
+      m = v.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})$/);
+      if (m) {
+        const d = new Date(`${m[1]}T${m[2]}Z`);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      // hh:mm:ss (today)
+      if (/^\d{1,2}:\d{2}:\d{2}$/.test(v)) {
+        const today = new Date().toISOString().split('T')[0];
+        const d = new Date(`${today}T${v}Z`);
+        return isNaN(d.getTime()) ? null : d;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Inventory this device's scripts + schedulers into device_scripts: upsert each
+   * by (device_id, kind, name), delete rows no longer present, then reconcile
+   * managed-script links. Follows the collectEvents convention of doing its own
+   * INSERTs keyed on this.device.id. Never writes to the device (read-only poll).
+   */
+  async collectScripts(): Promise<void> {
+    try {
+      const [scripts, schedulers] = await Promise.all([
+        this.getScripts().catch(() => [] as Record<string, string>[]),
+        this.getSchedulers().catch(() => [] as Record<string, string>[]),
+      ]);
+
+      const seen: { kind: string; name: string }[] = [];
+
+      const upsert = async (row: {
+        kind: string; name: string; rosId: string; source: string; comment: string;
+        policy: string | null; schedule: Record<string, string> | null;
+        runCount: number | null; lastStarted: Date | null; disabled: boolean;
+      }): Promise<void> => {
+        await query(
+          `INSERT INTO device_scripts
+             (device_id, kind, ros_id, name, source, source_hash, comment, policy,
+              schedule, run_count, last_started, disabled, last_seen)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+           ON CONFLICT (device_id, kind, name) DO UPDATE SET
+             ros_id=$3, source=$5, source_hash=$6, comment=$7, policy=$8,
+             schedule=$9, run_count=$10, last_started=$11, disabled=$12, last_seen=NOW()`,
+          [
+            this.device.id,
+            row.kind,
+            row.rosId || null,
+            row.name,
+            row.source,
+            hashSource(row.source),
+            row.comment || null,
+            row.policy,
+            row.schedule ? JSON.stringify(row.schedule) : null,
+            row.runCount,
+            row.lastStarted ? row.lastStarted.toISOString() : null,
+            row.disabled,
+          ]
+        );
+        seen.push({ kind: row.kind, name: row.name });
+      };
+
+      for (const s of scripts) {
+        const name = s['name'];
+        if (!name) continue;
+        await upsert({
+          kind: 'script',
+          name,
+          rosId: s['.id'] || '',
+          source: s['source'] || '',
+          comment: s['comment'] || '',
+          policy: s['policy'] || null,
+          schedule: null,
+          runCount: s['run-count'] !== undefined ? parseInt(s['run-count'], 10) || 0 : null,
+          lastStarted: DeviceCollector.parseRosDateTime(s['last-started']),
+          disabled: s['disabled'] === 'true',
+        });
+      }
+
+      for (const sc of schedulers) {
+        const name = sc['name'];
+        if (!name) continue;
+        const schedule: Record<string, string> = {};
+        if (sc['interval'] !== undefined) schedule.interval = sc['interval'];
+        if (sc['start-date'] !== undefined) schedule.start_date = sc['start-date'];
+        if (sc['start-time'] !== undefined) schedule.start_time = sc['start-time'];
+        await upsert({
+          kind: 'scheduler',
+          name,
+          rosId: sc['.id'] || '',
+          source: sc['on-event'] || '',
+          comment: sc['comment'] || '',
+          policy: sc['policy'] || null,
+          schedule: Object.keys(schedule).length ? schedule : null,
+          runCount: sc['run-count'] !== undefined ? parseInt(sc['run-count'], 10) || 0 : null,
+          lastStarted: DeviceCollector.parseRosDateTime(sc['last-started']),
+          disabled: sc['disabled'] === 'true',
+        });
+      }
+
+      // Drop rows for entries that no longer exist on the device.
+      if (seen.length > 0) {
+        await query(
+          `DELETE FROM device_scripts
+           WHERE device_id = $1
+             AND (kind, name) NOT IN (
+               SELECT k, n FROM UNNEST($2::text[], $3::text[]) AS t(k, n)
+             )`,
+          [this.device.id, seen.map((s) => s.kind), seen.map((s) => s.name)]
+        );
+      } else {
+        await query(`DELETE FROM device_scripts WHERE device_id = $1`, [this.device.id]);
+      }
+
+      const { ScriptRegistry } = await import('../ScriptRegistry');
+      await ScriptRegistry.reconcileDevice(this.device.id);
+    } catch (err) {
+      console.error(`[${this.device.name}] Failed to collect scripts:`, err);
+    }
   }
 
   // ─── Connection tracking (live active connections) ──────────────────────────

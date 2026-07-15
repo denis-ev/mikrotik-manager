@@ -20,9 +20,10 @@ import RadiosTab from '../components/device-detail/RadiosTab';
 import ConnectionsTab from '../components/device-detail/ConnectionsTab';
 import QueuesTab from '../components/device-detail/QueuesTab';
 import SecurityTab from '../components/device-detail/SecurityTab';
+import ScriptsTab from '../components/device-detail/ScriptsTab';
 import clsx from 'clsx';
 
-type TabKey = 'overview' | 'ports' | 'vlans' | 'routing' | 'firewall' | 'security' | 'queues' | 'connections' | 'config' | 'config-history' | 'hardware' | 'tools' | 'radios';
+type TabKey = 'overview' | 'ports' | 'vlans' | 'routing' | 'firewall' | 'security' | 'queues' | 'connections' | 'config' | 'config-history' | 'hardware' | 'tools' | 'radios' | 'scripts';
 
 function formatUptime(raw: string): string {
   if (!raw) return '—';
@@ -50,7 +51,7 @@ export default function DeviceDetailPage() {
   const queryClient = useQueryClient();
   const canWrite = useCanWrite();
   const [searchParams] = useSearchParams();
-  const VALID_TABS: TabKey[] = ['overview', 'ports', 'vlans', 'routing', 'firewall', 'security', 'queues', 'connections', 'config', 'config-history', 'hardware', 'tools', 'radios'];
+  const VALID_TABS: TabKey[] = ['overview', 'ports', 'vlans', 'routing', 'firewall', 'security', 'queues', 'connections', 'config', 'config-history', 'hardware', 'tools', 'radios', 'scripts'];
   const requestedTab = searchParams.get('tab') as TabKey | null;
   const [activeTab, setActiveTab] = useState<TabKey>(requestedTab && VALID_TABS.includes(requestedTab) ? requestedTab : 'overview');
   const [autoOpenBridge, setAutoOpenBridge] = useState<string | null>(null);
@@ -121,6 +122,7 @@ export default function DeviceDetailPage() {
     { key: 'config-history', label: 'Config History' },
     { key: 'hardware', label: 'Hardware' },
     ...(isWirelessAP ? [{ key: 'radios' as TabKey, label: 'Radios' }] : []),
+    { key: 'scripts', label: 'Scripts' },
     { key: 'tools', label: 'Tools' },
   ];
 
@@ -391,6 +393,7 @@ export default function DeviceDetailPage() {
       {activeTab === 'config-history' && <ConfigHistoryTab deviceId={deviceId} />}
       {activeTab === 'hardware' && <HardwareTab deviceId={deviceId} />}
       {activeTab === 'radios' && <RadiosTab deviceId={deviceId} deviceStatus={device.status} />}
+      {activeTab === 'scripts' && <ScriptsTab deviceId={deviceId} />}
       {activeTab === 'tools' && <ToolsTab deviceId={deviceId} />}
 
       {showTerminal && (
