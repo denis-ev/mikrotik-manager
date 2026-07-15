@@ -741,7 +741,7 @@ function OperationsView({
               Platform update available — v{versionInfo.latest}
             </div>
             <div className="text-[12px]" style={{ color: 'var(--ink-3)' }}>
-              You're on v{versionInfo.current}. Run{' '}
+              You&apos;re on v{versionInfo.current}. Run{' '}
               <code className="mono text-[11px]" style={{ color: 'var(--ink-2)' }}>docker compose pull &amp;&amp; docker compose up -d</code>{' '}
               to update.
             </div>
