@@ -72,6 +72,7 @@ export interface DeviceRow {
   ssh_password_encrypted?: string;
   model?: string;
   ros_version?: string;
+  architecture?: string;
   device_type: string;
   status: string;
 }
@@ -163,6 +164,9 @@ export class DeviceCollector {
       const model = rb['model'] || info['board-name'] || null;
       const serial = rb['serial-number'] || null;
       const firmware = rb['current-firmware'] || rb['factory-firmware'] || null;
+      // Cache the CPU architecture so version-pinned firmware rollouts can build the
+      // correct .npk name without an extra round-trip.
+      const architecture = info['architecture-name'] || null;
 
       await query(
         `UPDATE devices SET
@@ -171,9 +175,10 @@ export class DeviceCollector {
           serial_number = COALESCE($3, serial_number),
           firmware_version = COALESCE($4, firmware_version),
           ros_version = COALESCE($5, ros_version),
+          architecture = COALESCE($6, architecture),
           updated_at = NOW()
-        WHERE id = $6`,
-        [identityName, model, serial, firmware, rosVersion, this.device.id]
+        WHERE id = $7`,
+        [identityName, model, serial, firmware, rosVersion, architecture, this.device.id]
       );
     } catch (err) {
       console.error(`[${this.device.name}] Failed to collect system info:`, err);
@@ -2802,6 +2807,40 @@ export class DeviceCollector {
 
   async reboot(): Promise<void> {
     await this.client.execute('/system/reboot');
+  }
+
+  /** Installed packages: name, version, and whether disabled (for the extra-package guard). */
+  async getPackages(): Promise<{ name: string; version: string; disabled: boolean }[]> {
+    const rows = await this.client.execute('/system/package/print').catch(() => [] as Record<string, string>[]);
+    return rows.map((r) => ({
+      name: (r['name'] || '').trim(),
+      version: (r['version'] || '').trim(),
+      disabled: r['disabled'] === 'true' || r['disabled'] === 'yes',
+    }));
+  }
+
+  /** Files on the device, optionally narrowed to an exact file name (e.g. an .npk we just delivered). */
+  async getFiles(nameFilter?: string): Promise<{ name: string; size: number }[]> {
+    const rows = await this.client.execute('/file/print').catch(() => [] as Record<string, string>[]);
+    const files = rows.map((r) => ({
+      name: (r['name'] || '').trim(),
+      size: parseInt(r['size'] || '0', 10) || 0,
+    }));
+    return nameFilter ? files.filter((f) => f.name === nameFilter) : files;
+  }
+
+  /**
+   * Have the device download a file itself via /tool/fetch (mode inferred from the
+   * URL) and confirm it landed. Fetch is long-running, so it rides executeStreaming
+   * with a generous ceiling. Throws if the file is missing or zero-length afterward.
+   */
+  async fetchFile(url: string, dstFilename: string, maxDurationMs = 10 * 60_000): Promise<void> {
+    await this.client.executeStreaming('/tool/fetch', { url, 'dst-path': dstFilename }, maxDurationMs);
+    const files = await this.getFiles(dstFilename);
+    const f = files.find((x) => x.name === dstFilename);
+    if (!f || f.size <= 0) {
+      throw new Error(`/tool/fetch completed but ${dstFilename} is not present on the device`);
+    }
   }
 
   // ─── Ethernet monitor / SFP DDM ───────────────────────────────────────────

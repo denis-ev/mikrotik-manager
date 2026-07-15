@@ -480,6 +480,21 @@ CREATE TABLE IF NOT EXISTS wireless_security_profiles (
   updated_at            TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(device_id, name)
 );
+
+-- Phase 4: version-pinned batch RouterOS updates. A rollout can now pin an exact
+-- RouterOS version, choose how the .npk is delivered (device-side /tool fetch vs
+-- app-side download + SFTP upload), optionally chase the RouterBOARD firmware
+-- upgrade, and refuse downgrades unless explicitly allowed. The per-device row
+-- gains a separate RouterBOARD stage status ('upgrading'|'success'|'failed'|
+-- 'skipped'|NULL) and the resolved CPU architecture. firmware_rollout_devices.status
+-- also gains a 'fetching' phase (package delivery) between 'upgrading' and 'rebooting'.
+ALTER TABLE firmware_rollouts ADD COLUMN IF NOT EXISTS target_version VARCHAR(32);
+ALTER TABLE firmware_rollouts ADD COLUMN IF NOT EXISTS delivery VARCHAR(12) NOT NULL DEFAULT 'fetch';
+ALTER TABLE firmware_rollouts ADD COLUMN IF NOT EXISTS do_routerboard BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE firmware_rollouts ADD COLUMN IF NOT EXISTS allow_downgrade BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE firmware_rollout_devices ADD COLUMN IF NOT EXISTS routerboard_status VARCHAR(16);
+ALTER TABLE firmware_rollout_devices ADD COLUMN IF NOT EXISTS arch VARCHAR(32);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS architecture VARCHAR(32);
 `;
 
 const DEFAULT_SETTINGS = [

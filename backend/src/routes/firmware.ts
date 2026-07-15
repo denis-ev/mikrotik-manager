@@ -50,9 +50,14 @@ router.post('/check-all', requireWrite, async (_req: Request, res: Response) => 
 
 // POST /api/firmware/rollouts — create a rollout (optionally scheduled)
 router.post('/rollouts', requireWrite, async (req: Request, res: Response) => {
-  const { name, halt_on_failure, pre_backup, scheduled_at, devices, start } = req.body as {
+  const {
+    name, halt_on_failure, pre_backup, scheduled_at, devices, start,
+    target_version, delivery, do_routerboard, allow_downgrade,
+  } = req.body as {
     name?: string; halt_on_failure?: boolean; pre_backup?: boolean; scheduled_at?: string | null;
     devices?: { device_id: number; wave: number }[]; start?: boolean;
+    target_version?: string | null; delivery?: string;
+    do_routerboard?: boolean; allow_downgrade?: boolean;
   };
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   if (!Array.isArray(devices) || devices.length === 0) return res.status(400).json({ error: 'devices array is required' });
@@ -63,10 +68,22 @@ router.post('/rollouts', requireWrite, async (req: Request, res: Response) => {
   }
   if (scheduled_at && isNaN(Date.parse(scheduled_at))) return res.status(400).json({ error: 'scheduled_at must be a valid timestamp' });
 
+  // Version-pinning fields (all optional; absence keeps the channel-latest behaviour)
+  const pinnedVersion = target_version && target_version.trim() ? target_version.trim() : null;
+  if (pinnedVersion && !/^[0-9]+\.[0-9]+(\.[0-9]+)?([a-z]+[0-9]*)?$/.test(pinnedVersion)) {
+    return res.status(400).json({ error: 'target_version is not a valid RouterOS version' });
+  }
+  const deliveryMode = delivery ?? 'fetch';
+  if (deliveryMode !== 'fetch' && deliveryMode !== 'upload') {
+    return res.status(400).json({ error: "delivery must be 'fetch' or 'upload'" });
+  }
+
   const rollout = await queryOne<{ id: number }>(
-    `INSERT INTO firmware_rollouts (name, halt_on_failure, pre_backup, scheduled_at)
-     VALUES ($1,$2,$3,$4) RETURNING id`,
-    [name.trim().slice(0, 100), halt_on_failure !== false, pre_backup !== false, scheduled_at || null]);
+    `INSERT INTO firmware_rollouts
+       (name, halt_on_failure, pre_backup, scheduled_at, target_version, delivery, do_routerboard, allow_downgrade)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [name.trim().slice(0, 100), halt_on_failure !== false, pre_backup !== false, scheduled_at || null,
+     pinnedVersion, deliveryMode, do_routerboard !== false, allow_downgrade === true]);
   for (const d of devices) {
     await query(
       `INSERT INTO firmware_rollout_devices (rollout_id, device_id, wave) VALUES ($1,$2,$3)`,
@@ -115,6 +132,47 @@ router.post('/rollouts/:id/start', requireWrite, async (req: Request, res: Respo
   } catch (e) {
     res.status(409).json({ error: (e as Error).message });
   }
+});
+
+// GET /api/firmware/versions — latest RouterOS version per release channel, read
+// from MikroTik's NEWESTa7.<channel> files (each is "<version> <unix-timestamp>").
+// Result cached 1h in app_settings (mirrors the version_check_cache pattern) so
+// building a rollout doesn't hammer upgrade.mikrotik.com; null on fetch failure.
+const VERSIONS_CACHE_TTL_MS = 60 * 60_000;
+const VERSION_CHANNELS: { channel: string; file: string }[] = [
+  { channel: 'stable', file: 'NEWESTa7.stable' },
+  { channel: 'testing', file: 'NEWESTa7.testing' },
+  { channel: 'long-term', file: 'NEWESTa7.long-term' },
+];
+
+router.get('/versions', async (_req: Request, res: Response) => {
+  const cached = await queryOne<{ value: { channels: { channel: string; latest: string | null }[]; checked_at: string } }>(
+    `SELECT value FROM app_settings WHERE key='firmware_versions_cache'`);
+  const row = cached?.value;
+  if (row && Date.now() - new Date(row.checked_at).getTime() < VERSIONS_CACHE_TTL_MS) {
+    return res.json({ channels: row.channels });
+  }
+
+  const channels = await Promise.all(VERSION_CHANNELS.map(async (c) => {
+    try {
+      const resp = await fetch(`https://upgrade.mikrotik.com/routeros/${c.file}`, { signal: AbortSignal.timeout(6_000) });
+      if (!resp.ok) return { channel: c.channel, latest: null };
+      const first = (await resp.text()).trim().split(/\s+/)[0];
+      return { channel: c.channel, latest: first || null };
+    } catch {
+      return { channel: c.channel, latest: null };
+    }
+  }));
+
+  // Only cache when at least one channel resolved, so a transient outage doesn't
+  // pin nulls for an hour.
+  if (channels.some((c) => c.latest)) {
+    await query(
+      `INSERT INTO app_settings (key, value) VALUES ('firmware_versions_cache', $1)
+       ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()`,
+      [JSON.stringify({ channels, checked_at: new Date().toISOString() })]);
+  }
+  res.json({ channels });
 });
 
 // GET /api/firmware/changelog/:version — proxy MikroTik's per-version release

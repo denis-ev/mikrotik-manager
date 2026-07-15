@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowUpCircle, RefreshCw, CheckCircle, XCircle, AlertTriangle, Clock,
-  HardDrive, ShieldAlert, Rocket, Ban, ChevronRight,
+  HardDrive, ShieldAlert, Rocket, Ban, ChevronRight, Download, Upload, Cpu, FileText,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { firmwareApi } from '../services/api';
@@ -14,12 +14,20 @@ import ChangelogModal from '../components/ChangelogModal';
 const ITEM_STATUS: Record<string, { label: string; cls: string; spin?: boolean }> = {
   pending:    { label: 'Pending',      cls: 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400' },
   backing_up: { label: 'Backing up',   cls: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400', spin: true },
+  fetching:   { label: 'Getting package', cls: 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400', spin: true },
   upgrading:  { label: 'Upgrading',    cls: 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-400', spin: true },
   rebooting:  { label: 'Rebooting',    cls: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400', spin: true },
   verifying:  { label: 'Verifying',    cls: 'bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-400', spin: true },
   success:    { label: 'Success',      cls: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' },
   failed:     { label: 'Failed',       cls: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400' },
   skipped:    { label: 'Skipped',      cls: 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400' },
+};
+
+const ROUTERBOARD_STATUS: Record<string, { label: string; cls: string; spin?: boolean }> = {
+  upgrading: { label: 'Upgrading',  cls: 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-400', spin: true },
+  success:   { label: 'Success',    cls: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' },
+  failed:    { label: 'Failed',     cls: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400' },
+  skipped:   { label: 'Skipped',    cls: 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400' },
 };
 
 const ROLLOUT_STATUS: Record<string, string> = {
@@ -29,6 +37,31 @@ const ROLLOUT_STATUS: Record<string, string> = {
   failed:    'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400',
   cancelled: 'bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-slate-400',
 };
+
+// RouterOS-ish version pattern, e.g. 7.16, 7.16.1, 7.17beta2, 7.15rc1
+const VERSION_PATTERN = /^\d+\.\d+(\.\d+)?([a-z]+\d*)?$/i;
+
+function parseVersion(v: string) {
+  const m = v.trim().match(/^(\d+)\.(\d+)(?:\.(\d+))?([a-z]+)?(\d*)$/i);
+  if (!m) return null;
+  return {
+    major: parseInt(m[1], 10), minor: parseInt(m[2], 10), patch: m[3] ? parseInt(m[3], 10) : 0,
+    suffix: (m[4] ?? '').toLowerCase(), suffixNum: m[5] ? parseInt(m[5], 10) : 0,
+  };
+}
+
+/** Compares two RouterOS-style version strings. Returns <0 if a<b, >0 if a>b, 0 if equal/unparseable. */
+function compareVersions(a: string, b: string): number {
+  const pa = parseVersion(a), pb = parseVersion(b);
+  if (!pa || !pb) return 0;
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  const aStable = pa.suffix === '', bStable = pb.suffix === '';
+  if (aStable !== bStable) return aStable ? 1 : -1; // no suffix (final release) beats a pre-release
+  if (pa.suffix !== pb.suffix) return pa.suffix < pb.suffix ? -1 : 1;
+  return pa.suffixNum - pb.suffixNum;
+}
 
 function TypePill({ type }: { type: string }) {
   const label = type === 'wireless_ap' ? 'AP' : type === 'switch' ? 'SW' : type === 'router' ? 'RTR' : '—';
@@ -65,6 +98,11 @@ function RolloutPanel({ rolloutId, canWrite }: { rolloutId: number; canWrite: bo
         <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium capitalize', ROLLOUT_STATUS[rollout.status])}>
           {rollout.status}
         </span>
+        <span className="font-mono text-xs text-gray-500 dark:text-slate-400 flex items-center gap-1">
+          <ChevronRight className="w-3 h-3" />
+          {rollout.target_version ? rollout.target_version : 'channel latest'}
+          {rollout.target_version && rollout.delivery && ` (${rollout.delivery})`}
+        </span>
         {rollout.scheduled_at && rollout.status === 'pending' && (
           <span className="text-xs text-gray-400 dark:text-slate-500 flex items-center gap-1">
             <Clock className="w-3 h-3" />starts {formatDistanceToNow(new Date(rollout.scheduled_at), { addSuffix: true })}
@@ -73,6 +111,7 @@ function RolloutPanel({ rolloutId, canWrite }: { rolloutId: number; canWrite: bo
         <span className="ml-auto flex items-center gap-3 text-xs text-gray-400 dark:text-slate-500">
           {rollout.pre_backup && <span className="flex items-center gap-1"><HardDrive className="w-3 h-3" />pre-backup</span>}
           {rollout.halt_on_failure && <span className="flex items-center gap-1"><ShieldAlert className="w-3 h-3" />halt on failure</span>}
+          {rollout.do_routerboard !== false && <span className="flex items-center gap-1"><Cpu className="w-3 h-3" />RouterBOARD</span>}
           {canWrite && active && (
             <button onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending}
               className="flex items-center gap-1 px-2 py-1 rounded-lg text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
@@ -102,6 +141,21 @@ function RolloutPanel({ rolloutId, canWrite }: { rolloutId: number; canWrite: bo
                   {d.from_version || '—'}
                   {(d.to_version || d.status === 'success') && <><ChevronRight className="w-3 h-3" />{d.to_version || '?'}</>}
                 </span>
+                {d.routerboard_status ? (
+                  <span
+                    title="RouterBOARD firmware"
+                    className={clsx('px-1.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 flex-shrink-0',
+                      (ROUTERBOARD_STATUS[d.routerboard_status] ?? ROUTERBOARD_STATUS.skipped).cls)}
+                  >
+                    <Cpu className="w-3 h-3" />
+                    {(ROUTERBOARD_STATUS[d.routerboard_status]?.spin) && <RefreshCw className="w-3 h-3 animate-spin" />}
+                    {ROUTERBOARD_STATUS[d.routerboard_status]?.label ?? d.routerboard_status}
+                  </span>
+                ) : (
+                  <span title="RouterBOARD firmware" className="px-1.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 flex-shrink-0 bg-gray-100 dark:bg-slate-700 text-gray-400 dark:text-slate-500">
+                    <Cpu className="w-3 h-3" />—
+                  </span>
+                )}
                 {d.error && <span className="text-xs text-red-500 truncate" title={d.error}>{d.error}</span>}
                 <span className="ml-auto text-[11px] text-gray-400 dark:text-slate-500 flex-shrink-0">
                   {d.finished_at ? formatDistanceToNow(new Date(d.finished_at), { addSuffix: true }) : ''}
@@ -129,6 +183,13 @@ export default function FirmwarePage() {
   const [checkResult, setCheckResult] = useState<string | null>(null);
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
 
+  // Version-pinned rollout wizard state
+  const [versionMode, setVersionMode] = useState<'latest' | 'specific'>('latest');
+  const [targetVersion, setTargetVersion] = useState('');
+  const [delivery, setDelivery] = useState<'fetch' | 'upload'>('fetch');
+  const [doRouterboard, setDoRouterboard] = useState(true);
+  const [allowDowngrade, setAllowDowngrade] = useState(false);
+
   const { data: overview, isLoading } = useQuery({
     queryKey: ['fw-overview'],
     queryFn: () => firmwareApi.overview().then(r => r.data),
@@ -139,6 +200,12 @@ export default function FirmwarePage() {
     queryFn: () => firmwareApi.listRollouts().then(r => r.data),
     refetchInterval: 15_000,
   });
+  const { data: versionsData } = useQuery({
+    queryKey: ['fw-versions'],
+    queryFn: () => firmwareApi.getVersions().then(r => r.data),
+    staleTime: 5 * 60_000,
+  });
+  const channels = versionsData?.channels ?? [];
 
   const devices = overview?.devices ?? [];
   const updatable = devices.filter(d => d.firmware_update_available && d.status === 'online');
@@ -165,6 +232,23 @@ export default function FirmwarePage() {
     },
   });
 
+  const isSpecificVersion = versionMode === 'specific';
+  const trimmedVersion = targetVersion.trim();
+  const versionValid = !isSpecificVersion || VERSION_PATTERN.test(trimmedVersion);
+  const effectiveTargetVersion = isSpecificVersion && versionValid && trimmedVersion ? trimmedVersion : null;
+
+  const downgradeDevices = useMemo(() => {
+    if (!effectiveTargetVersion) return [];
+    return [...selected.keys()]
+      .map(id => devices.find(d => d.id === id))
+      .filter((d): d is (typeof devices)[number] => !!d && !!d.ros_version && compareVersions(effectiveTargetVersion, d.ros_version) < 0);
+  }, [effectiveTargetVersion, selected, devices]);
+
+  const hasDowngrade = downgradeDevices.length > 0;
+  const canCreateRollout = selected.size > 0
+    && (!isSpecificVersion || (versionValid && trimmedVersion.length > 0))
+    && (!hasDowngrade || allowDowngrade);
+
   const createRollout = useMutation({
     mutationFn: () => firmwareApi.createRollout({
       name: rolloutName.trim() || `RouterOS upgrade ${new Date().toISOString().slice(0, 10)}`,
@@ -173,9 +257,18 @@ export default function FirmwarePage() {
       scheduled_at: scheduleAt ? new Date(scheduleAt).toISOString() : null,
       start: !scheduleAt,
       devices: [...selected.entries()].map(([device_id, wave]) => ({ device_id, wave })),
+      target_version: effectiveTargetVersion,
+      delivery: effectiveTargetVersion ? delivery : undefined,
+      do_routerboard: doRouterboard,
+      allow_downgrade: hasDowngrade ? allowDowngrade : undefined,
     }),
     onSuccess: (r) => {
       setSelected(new Map());
+      setVersionMode('latest');
+      setTargetVersion('');
+      setDelivery('fetch');
+      setDoRouterboard(true);
+      setAllowDowngrade(false);
       setViewRolloutId(r.data.id);
       invalidate();
     },
@@ -350,8 +443,94 @@ export default function FirmwarePage() {
                 <input type="datetime-local" className="input py-1 text-xs w-auto" value={scheduleAt} onChange={e => setScheduleAt(e.target.value)} />
               </label>
             </div>
+
+            {/* Version picker */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300 cursor-pointer">
+                  <input type="radio" name="version-mode" className="w-4 h-4" checked={versionMode === 'latest'}
+                    onChange={() => setVersionMode('latest')} />
+                  Latest on device channel
+                </label>
+                <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300 cursor-pointer">
+                  <input type="radio" name="version-mode" className="w-4 h-4" checked={versionMode === 'specific'}
+                    onChange={() => setVersionMode('specific')} />
+                  Specific version
+                </label>
+              </div>
+
+              {isSpecificVersion && (
+                <div className="flex flex-wrap items-center gap-2 pl-1">
+                  {channels.map(c => (
+                    <button key={c.channel} type="button" disabled={!c.latest}
+                      onClick={() => c.latest && setTargetVersion(c.latest)}
+                      className="px-2 py-1 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-600 text-gray-600 dark:text-slate-300 hover:border-blue-400 dark:hover:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                      {c.channel}: <span className="font-mono">{c.latest ?? '—'}</span>
+                    </button>
+                  ))}
+                  <input
+                    className={clsx('input py-1 text-xs w-40 font-mono', trimmedVersion && !versionValid && 'border-red-400 dark:border-red-600')}
+                    placeholder="e.g. 7.16.1"
+                    value={targetVersion}
+                    onChange={e => setTargetVersion(e.target.value)}
+                  />
+                  {trimmedVersion && (
+                    <button type="button" className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                      onClick={() => setChangelogVersion(trimmedVersion)}>
+                      <FileText className="w-3.5 h-3.5" />View changelog
+                    </button>
+                  )}
+                  {trimmedVersion && !versionValid && (
+                    <span className="text-xs text-red-500">Invalid version format</span>
+                  )}
+                </div>
+              )}
+
+              {/* Delivery mode — only relevant when a specific version is pinned */}
+              {isSpecificVersion && (
+                <div className="flex flex-wrap items-center gap-3 pl-1">
+                  <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300 cursor-pointer">
+                    <input type="radio" name="delivery-mode" className="w-4 h-4" checked={delivery === 'fetch'}
+                      onChange={() => setDelivery('fetch')} />
+                    <Download className="w-3.5 h-3.5" />Fetch
+                  </label>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300 cursor-pointer">
+                    <input type="radio" name="delivery-mode" className="w-4 h-4" checked={delivery === 'upload'}
+                      onChange={() => setDelivery('upload')} />
+                    <Upload className="w-3.5 h-3.5" />Upload
+                  </label>
+                  <span className="text-xs text-gray-400 dark:text-slate-500">
+                    {delivery === 'fetch'
+                      ? 'Device downloads the package from MikroTik directly — router needs internet access.'
+                      : 'App downloads the package and uploads it via SFTP — router needs SSH credentials on file.'}
+                  </span>
+                </div>
+              )}
+
+              <label className="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300 cursor-pointer pl-1">
+                <input type="checkbox" className="w-4 h-4 rounded" checked={doRouterboard} onChange={e => setDoRouterboard(e.target.checked)} />
+                <Cpu className="w-3.5 h-3.5" />Also upgrade RouterBOARD firmware (second reboot)
+              </label>
+
+              {hasDowngrade && (
+                <div className="flex flex-col gap-1.5 pl-1 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2">
+                  <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                    <span>
+                      {trimmedVersion} is older than the current version on {downgradeDevices.length} selected device{downgradeDevices.length !== 1 ? 's' : ''}:{' '}
+                      {downgradeDevices.map(d => `${d.name} (${d.ros_version})`).join(', ')}
+                    </span>
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs text-amber-800 dark:text-amber-300 cursor-pointer">
+                    <input type="checkbox" className="w-3.5 h-3.5 rounded" checked={allowDowngrade} onChange={e => setAllowDowngrade(e.target.checked)} />
+                    Allow downgrade
+                  </label>
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center gap-3">
-              <button className="btn-primary flex items-center gap-2" disabled={createRollout.isPending}
+              <button className="btn-primary flex items-center gap-2" disabled={createRollout.isPending || !canCreateRollout}
                 onClick={() => createRollout.mutate()}>
                 {createRollout.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
                 {scheduleAt ? 'Schedule rollout' : 'Start rollout now'} ({selectedCount} device{selectedCount !== 1 ? 's' : ''})
@@ -388,6 +567,9 @@ export default function FirmwarePage() {
                 className="w-full px-5 py-2.5 flex items-center gap-3 text-left hover:bg-gray-50 dark:hover:bg-slate-700/40 transition-colors">
                 <span className={clsx('px-2 py-0.5 rounded-full text-xs font-medium capitalize flex-shrink-0', ROLLOUT_STATUS[r.status])}>{r.status}</span>
                 <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{r.name}</span>
+                <span className="font-mono text-xs text-gray-400 dark:text-slate-500 flex-shrink-0">
+                  → {r.target_version ? r.target_version : 'channel latest'}{r.target_version && r.delivery ? ` (${r.delivery})` : ''}
+                </span>
                 <span className="text-xs text-gray-400 dark:text-slate-500">
                   {r.success_count}/{r.device_count} succeeded{(r.failed_count ?? 0) > 0 ? ` · ${r.failed_count} failed` : ''}
                 </span>
