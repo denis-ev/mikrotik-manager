@@ -21,6 +21,7 @@ import type {
   ConfigSnapshotFull,
   ConfigDiffResponse,
   ConfigCaptureResult,
+  UserRole,
 } from '../types';
 
 const api = axios.create({
@@ -66,6 +67,38 @@ export const authApi = {
     api.put('/auth/password', { currentPassword, newPassword }),
   securityStatus: () =>
     api.get<{ warnings: string[] }>('/auth/security-status'),
+  oidcStatus: () =>
+    api.get<{ enabled: boolean; button_label: string }>('/auth/oidc/status'),
+};
+
+export interface OidcConfigView {
+  enabled: boolean;
+  issuer_url: string;
+  client_id: string;
+  has_secret: boolean;
+  scopes: string;
+  username_claim: string;
+  email_claim: string;
+  groups_claim: string;
+  group_role_map: Record<string, UserRole>;
+  default_role: UserRole;
+  auto_provision: boolean;
+  link_by_verified_email: boolean;
+  allowed_email_domains: string[];
+  button_label: string;
+  public_base_url: string;
+  redirect_uri: string;
+}
+
+export const oidcApi = {
+  getConfig: () => api.get<OidcConfigView>('/auth/oidc/config'),
+  updateConfig: (data: Partial<OidcConfigView> & { client_secret?: string }) =>
+    api.put<OidcConfigView>('/auth/oidc/config', data),
+  test: (issuer_url?: string) =>
+    api.post<{ ok: boolean; issuer?: string; claims_supported?: string[]; error?: string }>(
+      '/auth/oidc/test',
+      { issuer_url }
+    ),
 };
 
 // ─── Devices ──────────────────────────────────────────────────────────────────

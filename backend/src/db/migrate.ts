@@ -453,6 +453,16 @@ CREATE TABLE IF NOT EXISTS config_templates (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false;
 
+-- OIDC / SSO identity mapping. Local users keep password_hash; SSO users are
+-- keyed by (oidc_issuer, oidc_subject) and have a null password_hash.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_subject VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_issuer VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) NOT NULL DEFAULT 'local';
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc ON users (oidc_issuer, oidc_subject) WHERE oidc_subject IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email)) WHERE email IS NOT NULL;
+
 -- Per-client daily traffic rollups from the NetFlow collector. mac_address
 -- also holds the pseudo-clients 'unknown' (unmapped local IPs) and 'other'
 -- (clients folded by the top-N cardinality cap).

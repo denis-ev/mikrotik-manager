@@ -1,6 +1,6 @@
-import { useState, FormEvent, useRef } from 'react';
+import { useState, FormEvent, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Network, Eye, EyeOff, AlertCircle, ShieldCheck } from 'lucide-react';
+import { Network, Eye, EyeOff, AlertCircle, ShieldCheck, LogIn } from 'lucide-react';
 import { authApi } from '../services/api';
 import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
@@ -16,9 +16,21 @@ export default function LoginPage() {
   const [totpCode, setTotpCode] = useState('');
   const totpInputRef = useRef<HTMLInputElement>(null);
 
+  const [sso, setSso] = useState<{ enabled: boolean; button_label: string }>({ enabled: false, button_label: 'Sign in with SSO' });
+
   const setAuth = useAuthStore((s) => s.setAuth);
   const navigate = useNavigate();
   const { theme, toggleTheme } = useThemeStore();
+
+  useEffect(() => {
+    authApi.oidcStatus().then((r) => setSso(r.data)).catch(() => {});
+    // Surface an SSO error passed back on the redirect (?error=sso&reason=...).
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('error') === 'sso') {
+      setError(params.get('reason') || 'Single sign-on failed. Please try again.');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -234,6 +246,28 @@ export default function LoginPage() {
                 totpToken ? 'Verify Code' : 'Sign in'
               )}
             </button>
+
+            {sso.enabled && !totpToken && (
+              <>
+                <div className="flex items-center gap-3 my-1">
+                  <div className={`h-px flex-1 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`} />
+                  <span className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>or</span>
+                  <div className={`h-px flex-1 ${isDark ? 'bg-slate-700' : 'bg-slate-200'}`} />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { window.location.href = '/api/auth/oidc/login'; }}
+                  className={`w-full flex items-center justify-center gap-2 px-4 py-2 font-medium rounded-lg transition-colors border ${
+                    isDark
+                      ? 'bg-slate-800/80 border-slate-600 text-white hover:bg-slate-700'
+                      : 'bg-white/80 border-slate-300 text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  <LogIn className="w-4 h-4" />
+                  {sso.button_label || 'Sign in with SSO'}
+                </button>
+              </>
+            )}
           </form>
         </div>
 

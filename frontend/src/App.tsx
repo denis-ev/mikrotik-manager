@@ -11,6 +11,7 @@ import TopologyPage from './pages/TopologyPage';
 import BackupsPage from './pages/BackupsPage';
 import FirmwarePage from './pages/FirmwarePage';
 import SettingsPage from './pages/SettingsPage';
+import OidcCallbackPage from './pages/OidcCallbackPage';
 import WirelessPage from './pages/WirelessPage';
 import WirelessSettingsPage from './pages/WirelessSettingsPage';
 import GuestWifiPage from './pages/GuestWifiPage';
@@ -37,6 +38,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth/callback" element={<OidcCallbackPage />} />
         <Route
           path="/"
           element={

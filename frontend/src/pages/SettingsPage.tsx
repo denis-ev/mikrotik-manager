@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Settings, Users, Key, Plus, Trash2, CheckCircle, AlertCircle, Pencil, X,
-  ShieldCheck, ShieldAlert, RefreshCw, Upload, Lock, Bell, Send, KeyRound, ClipboardList, FileText, Zap,
+  ShieldCheck, ShieldAlert, RefreshCw, Upload, Lock, Bell, Send, KeyRound, ClipboardList, FileText, Zap, LogIn,
 } from 'lucide-react';
 import { settingsApi, authApi, certApi, alertsApi, auditLogApi, tagsApi, maintenanceApi, configTemplatesApi } from '../services/api';
 import type { MaintenanceWindow, ConfigTemplate } from '../services/api';
@@ -17,6 +17,7 @@ import {
 import clsx from 'clsx';
 import CredentialPresetsSettings from '../components/settings/CredentialPresetsSettings';
 import AutomationSettings from '../components/settings/AutomationSettings';
+import OidcSettings from '../components/settings/OidcSettings';
 
 const ROLE_META: Record<UserRole, { label: string; color: string; desc: string }> = {
   admin:    { label: 'Admin',    color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',    desc: 'Full access including user management' },
@@ -48,7 +49,7 @@ export default function SettingsPage() {
   const { theme, setTheme } = useThemeStore();
   const isAdmin = user?.role === 'admin';
   const canWrite = user?.role !== 'viewer';
-  const [activeTab, setActiveTab] = useState<'general' | 'users' | 'credentials' | 'security' | 'certificate' | 'alerting' | 'audit' | 'tags' | 'maintenance' | 'templates' | 'automation'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'users' | 'sso' | 'credentials' | 'security' | 'certificate' | 'alerting' | 'audit' | 'tags' | 'maintenance' | 'templates' | 'automation'>('general');
   const [auditSearch, setAuditSearch] = useState('');
   const [auditPage, setAuditPage] = useState(1);
   const [newTagName, setNewTagName] = useState('');
@@ -472,6 +473,7 @@ export default function SettingsPage() {
       tabs: [
         { key: 'general' as const, label: 'General', icon: Settings },
         { key: 'users' as const, label: 'Users & Roles', icon: Users },
+        ...(isAdmin ? [{ key: 'sso' as const, label: 'SSO / OIDC', icon: LogIn }] : []),
         { key: 'certificate' as const, label: 'Certificate', icon: Lock },
         ...(isAdmin ? [{ key: 'audit' as const, label: 'Audit Log', icon: ClipboardList }] : []),
       ],
@@ -872,9 +874,17 @@ export default function SettingsPage() {
                 {(users as User[]).map((u) => (
                   <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
                     <td className="px-4 py-2.5 font-medium text-gray-900 dark:text-white">
-                      {u.username}
-                      {u.id === user?.id && (
-                        <span className="ml-2 text-xs text-blue-500">(you)</span>
+                      <div className="flex items-center gap-2">
+                        {u.username}
+                        {u.id === user?.id && (
+                          <span className="text-xs text-blue-500">(you)</span>
+                        )}
+                        {u.auth_provider === 'oidc' && (
+                          <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">SSO</span>
+                        )}
+                      </div>
+                      {u.email && (
+                        <div className="text-xs text-gray-400 dark:text-slate-500 font-normal">{u.email}</div>
                       )}
                     </td>
                     <td className="px-4 py-2.5">
@@ -1805,6 +1815,9 @@ export default function SettingsPage() {
       {/* ── Automation (API tokens, webhooks, scheduled reports) ── */}
       {activeTab === 'automation' && (
         <AutomationSettings isAdmin={isAdmin} />
+      )}
+      {activeTab === 'sso' && (
+        <OidcSettings isAdmin={isAdmin} />
       )}
       {/* ── Config Templates ── */}
       {activeTab === 'templates' && (

@@ -3,7 +3,9 @@ export type UserRole = 'admin' | 'operator' | 'viewer';
 export interface User {
   id: number;
   username: string;
+  email?: string | null;
   role: UserRole;
+  auth_provider?: 'local' | 'oidc';
   created_at?: string;
 }
 

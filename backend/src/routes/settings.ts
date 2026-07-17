@@ -4,15 +4,22 @@ import { query, queryOne } from '../config/database';
 import { requireAuth, requireAdmin } from '../middleware/auth';
 import { netflowCollector } from '../services/netflow/NetflowCollector';
 import { validatePassword } from '../utils/passwordPolicy';
+import { OIDC_SETTINGS_KEY } from '../services/oidc/oidcConfig';
 
 const router = Router();
 router.use(requireAuth);
+
+// Settings keys managed through their own dedicated (admin-only) endpoints and
+// never exposed via this generic surface — the OIDC config holds an encrypted
+// client secret and must only be read/written through /api/auth/oidc/config.
+const PROTECTED_SETTING_KEYS = new Set<string>([OIDC_SETTINGS_KEY]);
 
 // GET /api/settings
 router.get('/', async (_req: Request, res: Response) => {
   const settings = await query(`SELECT key, value FROM app_settings ORDER BY key`);
   const map: Record<string, unknown> = {};
   for (const s of settings as { key: string; value: unknown }[]) {
+    if (PROTECTED_SETTING_KEYS.has(s.key)) continue;
     map[s.key] = s.value;
   }
   res.json(map);
@@ -22,6 +29,7 @@ router.get('/', async (_req: Request, res: Response) => {
 router.put('/', requireAdmin, async (req: Request, res: Response) => {
   const updates = req.body as Record<string, unknown>;
   for (const [key, value] of Object.entries(updates)) {
+    if (PROTECTED_SETTING_KEYS.has(key)) continue;
     await query(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, NOW())
        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
@@ -39,7 +47,7 @@ router.put('/', requireAdmin, async (req: Request, res: Response) => {
 // GET /api/settings/users
 router.get('/users', requireAdmin, async (_req: Request, res: Response) => {
   const users = await query(
-    `SELECT id, username, role, created_at FROM users ORDER BY username`
+    `SELECT id, username, email, role, auth_provider, created_at FROM users ORDER BY username`
   );
   res.json(users);
 });

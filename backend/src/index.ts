@@ -32,6 +32,7 @@ import { decrypt } from './utils/crypto';
 import { corsMiddlewareOptions, socketIoCorsOptions } from './utils/corsOrigins';
 
 import authRoutes from './routes/auth';
+import oidcRoutes from './routes/oidc';
 import auditLogRoutes from './routes/auditLog';
 import tagsRoutes from './routes/tags';
 import maintenanceWindowsRoutes from './routes/maintenanceWindows';
@@ -296,6 +297,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+app.use('/api/auth/oidc', oidcRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', devicesRoutes);
 app.use('/api/clients', clientsRoutes);

@@ -2,7 +2,7 @@
 
 A self-hosted, full-stack network management platform for MikroTik devices. Monitor, configure, and manage your entire MikroTik infrastructure — routers, switches, and wireless access points — from a single web interface.
 
-![Version](https://img.shields.io/badge/version-0.16.12_Beta-blue)
+![Version](https://img.shields.io/badge/version-0.17.0_Beta-blue)
 ![License](https://img.shields.io/badge/license-AGPLv3-blue)
 ![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?logo=typescript&logoColor=white)
@@ -279,6 +279,7 @@ Instant search across devices, clients, and events from the top navigation bar.
 - Admin-only user creation and role assignment
 - JWT authentication with secure session handling
 - **Two-factor authentication (TOTP)** — per-user 2FA setup via QR code (compatible with Google Authenticator, Authy, etc.); login requires a 6-digit code after password when enabled; disable with password confirmation
+- **Single sign-on (OIDC/SSO)** — authenticate against any standards-compliant OpenID Connect provider (Microsoft Entra ID, Okta, Google Workspace, Keycloak, Authentik, …). Auto-provisions or links users on first sign-in, maps IdP groups to platform roles, and coexists with local login as a break-glass fallback. Configured entirely in the UI — see [Single sign-on (OIDC)](#single-sign-on-oidc) below
 - **Credential preset access control** — presets can be restricted to admins only (`allow_operator_use`); operators only see presets they are permitted to use when adding or updating devices
 
 ### TLS / HTTPS
@@ -469,6 +470,40 @@ All configuration is done via environment variables in `.env`:
 Upgrades are non-breaking: on startup, existing ciphertext is decrypted via a **legacy-key fallback** (including previous defaults) and transparently **re-encrypted under the current key** by a background sweep. When rotating the JWT secret off a public default, sessions signed with that default are no longer accepted — users simply log in again once.
 
 **Key rotation:** set a new `ENCRYPTION_KEY` (or delete the persisted secret to force regeneration) and restart. Old rows keep decrypting via the legacy fallback and are re-encrypted forward automatically. **If the persisted secret and any prior key are both lost**, ciphertext under that key cannot be recovered — re-enter device credentials or restore a backup.
+
+### Single sign-on (OIDC)
+
+Sign in against any standards-compliant OpenID Connect provider (Microsoft Entra ID, Okta, Google Workspace, Keycloak, Authentik, and others). It uses the Authorization Code flow with PKCE; the server validates the ID token (signature via JWKS, plus `iss`/`aud`/`exp`/`nonce`) and then issues the platform's normal session — so SSO users get the same experience as local users. **No environment variables or redeploy are required** — everything is configured in the UI and stored (with the client secret encrypted at rest) in the database.
+
+**1. Register the app with your identity provider.** Create an OIDC/OAuth "web application" and note its **Issuer URL** (the base that serves `/.well-known/openid-configuration`), **Client ID**, and **Client Secret** (public clients with no secret are also supported via PKCE). For the **redirect / callback URI**, use the value shown in the settings panel:
+
+```
+https://<your-host>/api/auth/oidc/callback
+```
+
+**2. Configure it in the app.** As an admin, go to **Settings → SSO / OIDC** and fill in:
+
+| Field | Purpose |
+|---|---|
+| **Issuer URL** | Your provider's base URL; **Test discovery** verifies it's reachable. |
+| **Client ID / Client Secret** | From step 1. The secret is write-only and encrypted at rest; leave blank to keep the existing one. |
+| **Scopes** | Default `openid profile email`. Add a groups scope if your IdP needs one to emit group membership. |
+| **Username / Email / Groups claim** | Which ID-token claims to read. Defaults: `preferred_username`, `email`, `groups`. |
+| **Group → role mapping** | Map IdP groups to **admin / operator / viewer** (e.g. `net-admins → admin`). Highest-privilege match wins. |
+| **Default role** | Role for users whose groups don't match any mapping (default **viewer**). |
+| **Auto-provision** | Create a local user automatically on first sign-in. |
+| **Link by verified email** | Attach an SSO identity to an existing local account when the IdP's `email_verified` matches. |
+| **Allowed email domains** | Optional allowlist restricting who may sign in. |
+| **Button label** | Text on the login button (e.g. "Sign in with Okta"). |
+
+Enable it and **Save**. A **Sign in with SSO** button appears on the login page.
+
+**Behavior and safety:**
+- **Provisioning / linking** — first sign-in creates a user (auto-provision) or, if `email_verified` matches an existing local account, links to it (no duplicate). SSO users have no local password.
+- **Roles** are always resolved server-side from your group mapping; existing users are never silently demoted when a login carries no matching group.
+- **Break-glass** — local username/password login stays available, so the seeded local admin can always get in even if the IdP is misconfigured or unreachable.
+- **Behind a proxy / custom domain** — the redirect URI is derived from the request host; set **Public base URL** in the panel to pin it if your external URL differs from what the backend sees.
+- SSO users are labeled with an **SSO** badge in **Users & Roles**.
 
 ---
 
