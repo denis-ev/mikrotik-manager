@@ -8,6 +8,16 @@ import { reportService, computeNextRun } from '../services/ReportService';
 const router = Router();
 router.use(requireAuth);
 
+// Linear email check — no backtracking regex (avoids ReDoS on user-supplied lists).
+function isValidEmail(addr: string): boolean {
+  if (/\s/.test(addr)) return false;
+  const at = addr.indexOf('@');
+  if (at <= 0 || at !== addr.lastIndexOf('@')) return false;
+  const domain = addr.slice(at + 1);
+  const dot = domain.lastIndexOf('.');
+  return dot > 0 && dot < domain.length - 1;
+}
+
 // ─── API tokens (admin only — a token can never mint more tokens) ─────────────
 
 router.get('/tokens', requireAdmin, async (_req: Request, res: Response) => {
@@ -117,7 +127,7 @@ router.post('/reports', requireWrite, async (req: Request, res: Response) => {
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   if (!['daily', 'weekly', 'monthly'].includes(frequency ?? '')) return res.status(400).json({ error: 'frequency must be daily, weekly or monthly' });
   const rcpts = (recipients ?? '').split(',').map(r => r.trim()).filter(Boolean);
-  if (rcpts.length === 0 || rcpts.some(r => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r))) {
+  if (rcpts.length === 0 || rcpts.some(r => !isValidEmail(r))) {
     return res.status(400).json({ error: 'recipients must be comma-separated email addresses' });
   }
 

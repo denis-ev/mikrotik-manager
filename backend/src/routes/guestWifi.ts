@@ -87,9 +87,19 @@ router.post('/setup', requireWrite, async (req: Request, res: Response) => {
 // Human-friendly voucher codes: no ambiguous chars (0/O, 1/I/L)
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 function generateCode(len = 8): string {
-  const bytes = randomBytes(len);
+  const n = CODE_CHARS.length;
+  // Rejection sampling: discard bytes at or above the largest multiple of n so
+  // the modulo is uniform (avoids the slight bias of a raw byte % n).
+  const limit = Math.floor(256 / n) * n;
   let out = '';
-  for (let i = 0; i < len; i++) out += CODE_CHARS[bytes[i] % CODE_CHARS.length];
+  while (out.length < len) {
+    for (const b of randomBytes(len)) {
+      if (b < limit) {
+        out += CODE_CHARS[b % n];
+        if (out.length === len) break;
+      }
+    }
+  }
   return `${out.slice(0, 4)}-${out.slice(4)}`;
 }
 

@@ -33,6 +33,8 @@ jobs:
           languages: ${{ matrix.language }}
           # CodeQL queries to run — security-extended adds more security checks
           queries: security-extended
+          # Filters out non-actionable rules (see file for rationale)
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
